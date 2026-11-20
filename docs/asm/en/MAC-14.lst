@@ -8,7 +8,7 @@
 ; Tick ≈ 10 ms [assumed, derived from the 5-baud receive code; tester tolerance ±10 %].
 ; Engine speed: 1 unit of $8018 ≈ 22…24 rpm [assumed], exact scale not confirmed.
 ; Port 2: P2DDR bit 1 = 1 makes all of P21-P27 outputs at once (HD6303X datasheet),
-; so PORT2.5 (J17) and PORT2.6 (N75) work as outputs.
+; so PORT2.5 (purpose unknown) and PORT2.6 (N75) work as outputs.
 ; Register $14 is RP5CR (RAM and port 5): bit 6 enables internal RAM $40-$FF,
 ; bit 7 is the RAM power-retention flag, bits 0/1 enable IRQ1/IRQ2. Tasks: 0 every tick,
 ; 1 every 2 ticks, 2 every 4, 3 every 10 (table D1E1).

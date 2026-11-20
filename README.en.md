@@ -31,7 +31,9 @@ python3 -I tools/lst6303.py src/MAC-14.BIN docs/asm/en/MAC-14.notes --lang=en > 
 ## Caveats
 
 Assumptions in the comments are marked `[assumed]`, unknowns `[?]`. The tick length (≈ 10 ms) and the
-rpm scale (≈ 22 rpm per unit) are derived from the code and have not been measured on a car.
+rpm scale (≈ 22 rpm per unit) are derived from the code and have not been measured on a car. The same applies
+to the ignition map unit (1° per unit) and to the direction "larger value = later spark": not checked with a
+timing light. The type of the external chip at $0100/$0101 is not identified.
 
 The English and German comments are translated from the Russian originals; the Russian files are the reference.
 

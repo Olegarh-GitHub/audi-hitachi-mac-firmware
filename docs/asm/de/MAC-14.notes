@@ -12,7 +12,7 @@ legend
 |Tick ≈ 10 ms [Vermutung, abgeleitet aus dem 5-Baud-Empfangscode; Toleranz des Testers ±10 %].
 |Drehzahl: 1 Einh. von $8018 ≈ 22…24 U/min [Vermutung], genaue Skalierung nicht bestätigt.
 |Port 2: P2DDR Bit 1 = 1 schaltet P21-P27 alle auf einmal als Ausgänge (Datenblatt HD6303X),
-|daher arbeiten PORT2.5 (J17) und PORT2.6 (N75) als Ausgänge.
+|daher arbeiten PORT2.5 (Funktion unbekannt) und PORT2.6 (N75) als Ausgänge.
 |Register $14 ist RP5CR (RAM und Port 5): Bit 6 schaltet das interne RAM $40-$FF ein,
 |Bit 7 ist das Kennzeichen für erhaltene RAM-Versorgung, Bits 0/1 geben IRQ1/IRQ2 frei. Aufgaben: 0 jeden Tick,
 |1 alle 2 Ticks, 2 alle 4, 3 alle 10 (Tabelle D1E1).

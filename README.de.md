@@ -6,8 +6,8 @@ Firmware-Dumps der Steuergeräte Hitachi MAC-14 und MAC-12D und ihre kommentiert
 
 | Datei | Steuergerät | Motor | EPROM | SHA-256 |
 |---|---|---|---|---|
-| `src/MAC-14.BIN` | MAC-14, 447905383L | MC (1988–1991); andere Teilenummern und Revisionen der MC-Steuergeräte können abweichen | MBM27128, 16 KB, $C000–$FFFF | `a229f12c5f0fadd0214c420c67368cab571f0e1736263b6ccc484de028713d29` |
-| `src/MAC-12D.BIN` | MAC-12D, 857905383 | 1B/2B (1988–1990); dass ein Abbild für beide passt, ist nicht bestätigt | MBM2764, 8 KB, $E000–$FFFF | `407089b4111323564130cfe3333cd1fb94f1ae7f2ad20de5ac04ee586765375e` |
+| `src/MAC-14.BIN` | MAC-14, 447905383L | MC (1988–1991) | MBM27128, 16 KB, $C000–$FFFF | `a229f12c5f0fadd0214c420c67368cab571f0e1736263b6ccc484de028713d29` |
+| `src/MAC-12D.BIN` | MAC-12D, 857905383 | 1B/2B (1988–1990) | MBM2764, 8 KB, $E000–$FFFF | `407089b4111323564130cfe3333cd1fb94f1ae7f2ad20de5ac04ee586765375e` |
 
 Beide Steuergeräte verwenden den Prozessor HD63B03XP.
 

@@ -1,0 +1,6448 @@
+# MAC-14 annotation (format: docs/asm/NOTES_FORMAT.md)
+# Markers: no marker means verified from the code; [assumed] means assumption; [?] means unknown.
+
+ptrtab D1C9 4      # dispatcher tasks
+ptrtab DADF 16     # KW1281 commands
+
+legend
+|LEGEND MAC-14 (J88, Audi 100/200 typ 44, engine MC2)
+|CPU HD63B03XP, ROM Fujitsu MBM27128 (16 KB, $C000-$FFFF), RAM $8000-$8290.
+|External chip at address $0100/$0101 (register number / data): ADC, tooth counting,
+|ignition, digital inputs. Its type has not been identified.
+|Tick ≈ 10 ms [assumed, derived from the 5-baud receive code; tester tolerance ±10 %].
+|Engine speed: 1 unit of $8018 ≈ 22…24 rpm [assumed], exact scale not confirmed.
+|Port 2: P2DDR bit 1 = 1 makes all of P21-P27 outputs at once (HD6303X datasheet),
+|so PORT2.5 (J17) and PORT2.6 (N75) work as outputs.
+|Register $14 is RP5CR (RAM and port 5): bit 6 enables internal RAM $40-$FF,
+|bit 7 is the RAM power-retention flag, bits 0/1 enable IRQ1/IRQ2. Tasks: 0 every tick,
+|1 every 2 ticks, 2 every 4, 3 every 10 (table D1E1).
+|
+|Code         What it is                           Pin    Where in the program
+|F            brake light switch                   32     chip, reg. $19 bit 3 [assumed]
+|F60          idle switch                          20     chip, reg. $19 bit 5 [assumed]
+|F76          coolant thermo switch > 119 °C       14     PORT5.7 [assumed]
+|F81          full load switch                     26     chip, reg. $19 bit 4 [assumed]
+|G4           TDC sender (flywheel pin)            13/12  chip, IRQ1 events [assumed]
+|G28          engine speed (ring gear teeth)       11/29  chip, reg. $0C/$0D -> $8018
+|G39          oxygen sensor                        30     ADC ch. 3 (10 bit) -> $801C
+|G40          Hall sender in distributor           27/25  PORT6.1 (input)
+|G42          intake air temperature               24     ADC ch. 7 -> $8020 [assumed]
+|G61, G66     knock sensors                        15,2/16 ADC ch. 6 via amplifier [assumed]
+|G62          coolant temperature                  10     ADC ch. 2 -> $801B [assumed]
+|G71          manifold pressure (inside the unit)  —      ADC ch. 0 -> $8019 [assumed]
+|J17          fuel pump relay                      21     PORT6.6, 1 = on [assumed]: off without sync,
+|                                                          on in test 4433 (F930), off by protections (EF60)
+|J128         boost gauge in the instrument cluster 17    not found [?]
+|J142         idle control unit (signal input)     4      ADC ch. 5 -> $801E (N65) [assumed]
+|K66 / L      VEZ lamp, blink code output          31     PORT6.4
+|N7           mixture frequency valve              8      timer output OC1, 71.8 Hz; test 4441 = 50 %
+|N17          cold start valve                     1      PORT6.5, 0 = open; test 4443
+|N65          fuel cut-off (via J142)              4      see J142
+|N70          ignition power stage                 22     chip $0100 [assumed]
+|N75          boost control valve                  19     PORT2.6, PWM in the CMI interrupt; test 4442
+|N80          carbon canister purge valve          3      chip, reg. $0B: 00/FF slow PWM; test 4343
+|N115         tank shut-off valve                  23     chip, reg. $19 bit 2; test 4331
+|—            L line (diagnostic request input)    5      PORT5.6
+|—            K line (KW1281)                      28     SCI (P23 receive / P24 transmit)
+|—            coding (connector T6m)               6, 34  PORT6.2 and PORT5.4, which goes where is [?]
+|—            supply voltage                       35     ADC ch. 1 -> $801A [assumed]
+|—            "program running" signal (watchdog) —     PORT6.7, toggled every tick; if it stops, an external circuit restarts the CPU [assumed]
+|—            tachometer, J142                     7      PORT6.3 [assumed]
+|—            unknown output                       ?      PORT2.5: 1 at engine speed ≥ 20 units after sync, 1 after reset [?]
+|
+|Blink codes ($C928), two fault memory bits per code:
+|1111 ECU   2111 G28   2112 G4   2113 G40   2121 F60   2123 F81
+|2141/2143 knock retard limit   2142 G61   2144 G66
+|2214 overspeed   2221/2222 G71   2224 overboost
+|2312 G62   2322 G42   2342 lambda control   4444 no faults
+|(code meanings are taken from an older analysis and will be rechecked against the code)
+|Actuator tests ($C958): 4433 J17, 4441 N7, 4442 N75, 4443 N17, 4343 N80, 4331 N115.
+|Test step order: the bit in $80AF shifts right: $80 J17, $40 N7, $20 N75,
+|$10 N17, $08 N80, $04 N115 (verified for N7, N75, N17, N80, N115).
+
+# ---- tasks and vectors (root names)
+label D220 TASK0
+label DD18 TASK1
+label E30A TASK2
+label EA2C TASK3
+
+# ======================================================================
+# Common subroutines: axis search and interpolation (CA05-CA87)
+# Typical call:  LDX #axis / LDAA value / LDAB #points / JSR AXIS_UP
+#                PSHB / JSR FRAC_UP / TBA / PULB / LDX #table / ABX / TAB / JSR INTERP
+# ======================================================================
+label CA05 FRAC_UP
+head CA05
+|FRAC_UP: fraction between two points of an ascending axis.
+|Input: A = value, X -> left axis point (result of AXIS_UP).
+|Output: B = (A - axis[i]) * 256 / (axis[i+1] - axis[i]), i.e. 0...255.
+CA05 B = 0 in case of an exact hit
+CA06 A = value minus left point
+CA08 exactly on the point? yes: fraction 0
+CA0A B = interval width
+CA0E divide
+label CA10 FRAC_DN
+head CA10
+|FRAC_DN: the same for a descending axis (axis[i] > axis[i+1]).
+CA10 B = 0 in case of an exact hit
+CA11 A = left point minus value
+CA14 exactly on the point? yes: fraction 0
+CA16 B = interval width (positive)
+label CA1B DIV8
+head CA1B
+|DIV8: fractional division: B = A * 256 / B. Condition: A < B.
+|Ordinary long division, 8 steps. Quotient bits are accumulated
+|inverted and flipped at the end (COMB).
+CA1B push divisor
+CA1C push dividend
+CA1D room for the step counter
+CA1F 8 steps
+CA21 counter
+CA23 A = dividend (remainder)
+CA25 quotient: initial value FF (bits inverted)
+CA27 save
+CA29 B is the high part of the remainder
+CA2A shift remainder left
+CA2B carry into B
+CA2C subtract divisor
+CA2E account for borrow
+CA30 not negative? yes: quotient bit 1 (written as 0 here because it is inverted)
+CA32 went negative: add the divisor back
+CA34 carry = 1 (quotient bit 0, written inverted)
+CA36 quotient bit into the result
+CA38 next step
+CA3A steps left? yes: repeat
+CA3C pop counter
+CA3D B = inverted quotient
+CA3E drop divisor
+CA3F B = quotient (fraction 0...255)
+CA40 return
+label CA41 INTERP
+head CA41
+|INTERP: linear interpolation between two adjacent table values.
+|Input: X -> table[i], B = fraction (0...255).
+|Output: A = t[i] + (t[i+1] - t[i]) * fraction / 256, rounded.
+CA41 t[i]
+CA43 push
+CA44 t[i+1]
+CA46 push
+CA47 X -> t[i+1] on the stack, followed by t[i]
+CA48 A = t[i+1]; the sign will take its place
+CA4A sign = 0 (rising)
+CA4C A = t[i+1] - t[i]
+CA4E table rising? yes: the difference is already positive
+CA50 falling: absolute value of the difference
+CA51 sign = FF (falling)
+CA53 difference * fraction
+CA54 rounding: top bit of the low byte
+CA55 add it
+CA57 B = sign
+CA58 table rising?
+CA59 yes: add
+CA5B no: subtract
+CA5C B = t[i]
+CA5D A = t[i] + correction
+CA5E return
+label CA5F AXIS_UP
+head CA5F
+|AXIS_UP: find the interval on an ascending axis.
+|Input: A = value, X -> axis, B = number of points.
+|Output: X -> left point of the interval, B = its index, A = value.
+|Below the first point: index 0 and A = first point (fraction will be 0).
+|Above the last: last point and A = its value.
+CA5F save value
+CA60 save number of points
+CA61 value below this point?
+CA63 yes: interval found
+CA65 next point
+CA66 points left?
+CA67 no: past the end of the axis
+CA69 to the next one
+label CA6B AXIS_DN
+head CA6B
+|AXIS_DN: the same for a descending axis (for example, temperature from the ADC:
+|the colder, the larger the number).
+CA6B save value
+CA6C save number of points
+CA6D value above this point?
+CA6F yes: interval found
+CA71 next point
+CA72 points left?
+CA73 yes: continue
+CA75 past the end: B = number of points
+CA76 A = value
+CA77 index of the last point
+CA78 X -> last point
+CA79 A = point value (fraction will be 0)
+CA7B return
+CA7C A = number of points
+CA7D A = index of the point found
+CA7E into B
+CA7F is this the first point (value before the start of the axis)?
+CA81 no: left point = previous one
+CA82 X -> left point
+CA83 A = value
+CA84 return
+CA85 pop value; A = first point
+CA86 to the common exit
+
+# ======================================================================
+# Throttle switches and the flag "G71 faulty under load" (D1E5-D21F)
+# ======================================================================
+label D1E5 IS_IDLE
+head D1E5
+|IS_IDLE: is the throttle closed (idle switch F60)?
+|Output: C = 1 means closed. If engine speed is not below the first point of axis C210
+|(40 units ≈ 890 rpm) and the idle switch is flagged as faulty ($8093.3),
+|the answer is always "not closed".
+D1E5 engine speed
+D1E8 below 40 units (≈890 rpm)?
+D1EB yes: trust the switch
+D1ED idle switch fault bit
+D1EF idle switch faulty?
+D1F2 yes: treat the throttle as open
+D1F4 read digital inputs (chip reg. $19)
+D1F6 bit 5 is the idle switch F60
+D1F8 open? yes: throttle open
+D1FA closed: C = 1
+D1FC C = 0: throttle open
+label D1FE MAP_BAD_LOAD
+head D1FE
+|MAP_BAD_LOAD: is G71 faulty while the engine is under load?
+|Output: C = 1 if there is a pressure fault ($8091 & $72), engine speed is not below
+|40 units and the throttle is not closed. Then instead of the measured pressure
+|the substitute value $C79E is used.
+D1FE pressure fault bits
+D200 any pressure faults?
+D203 no: C = 0
+D205 engine speed
+D208 below 40 units (≈890 rpm)?
+D20B yes: C = 0
+D20D throttle closed?
+D20F yes: C = 0
+D211 C = 1: use the substitute pressure
+D213 C = 0
+label D215 RD_INPUTS
+head D215
+|RD_INPUTS: read chip register $19, the digital inputs.
+|Bit 5 is F60 (idle), bit 4 is F81 (full throttle), bit 3 is the brake light switch,
+|bit 2 reads back the N115 output. 1 = contact closed [assumed from the logic].
+D215 register number $19
+label D217 CHIP_RD
+head D217
+|CHIP_RD: read chip register $0100: A = number, on exit A = data.
+|Interrupts are disabled so that an IRQ cannot change the register number between the write and the read.
+D217 disable interrupts
+D218 register number
+D21B data
+D21E enable interrupts
+
+# ======================================================================
+# Task 3: operating mode flags $8029, flags $8028, fuel pump shut-off
+# (EDF7-EF63, patch F930). Called every 10 ticks (100 ms).
+# ======================================================================
+head EDF7
+|Delay after start: how many calls (100 ms each) engine speed must stay
+|above 20 units before $8029.0 "delay after start elapsed" is set.
+|Table over the lowest temperature since switch-on ($807B):
+|axis C6E8 = 216 205 189 90, values C6EC = 10 10 1 0.
+|At low atmospheric pressure ($8004 ≤ 122) there is no delay [?].
+EDF7 temperature axis C6E8 (descending)
+EDFA coldest coolant temperature since switch-on
+EDFD 4 points
+EDFF find interval
+EE02 push point index
+EE03 fraction
+EE06 A = fraction
+EE07 B = point index
+EE08 delay table C6EC
+EE0B X -> value
+EE0C B = fraction
+EE0D A = delay (task 3 calls)
+EE10 start flags
+EE13 $8075.6 [?]
+EE15 set: no delay
+EE17 atmospheric pressure at switch-on
+EE1A above 122 (≈0.95 bar) [assumed]?
+EE1D yes: delay from the table
+EE1F otherwise no delay
+EE20 $8015 = delay
+EE23 engine speed
+EE26 save in a temporary cell
+EE29 operating mode flags
+EE2C cranking in progress (bit 7)? yes: leave bit 6 alone
+EE2E coding: PORT6.2 = 1 means manual gearbox (HS)
+EE31 AT? yes: AT threshold
+EE33 HS: threshold C6D5 = 30 units (≈670 rpm)
+EE38 AT: threshold C6D2 = 30 units (both equal)
+EE3B engine speed below threshold? yes: do not set bit 6
+EE3D bit 6: engine has started (speed ≥ 30 units)
+EE3F clear bit 1 first
+EE41 engine speed below C6BF = 20 units (≈440 rpm)?
+EE44 yes: delay counter to zero
+EE46 bit 0 (delay elapsed) already set?
+EE48 yes: do not set bit 1
+EE4A start flags
+EE4D $8075.6 [?]
+EE4F set: do not set bit 1
+EE51 bit 1: engine is turning, delay still running
+EE53 delay counter
+EE56 reached $8015?
+EE59 yes: delay elapsed
+EE5B counter + 1
+EE5E engine speed below 20 units: counter = 0
+EE5F save counter
+EE64 bit 0: delay after start elapsed
+EE66 engine speed
+EE69 below 16 units (≈350 rpm)?
+EE6B no: clear bit 3
+EE6D bit 3 = 0 (set only on reset)
+EE6F engine running time (task 1 calls, 20 ms each)
+EE72 less than 1500 (30 s)?
+EE75 no: bit 2
+EE77 bit 2: engine has been running for more than 30 s
+EE79 engine speed below C6BD = 24 units (≈530 rpm)?
+EE7C no: clear bit 5
+EE7E bit 5 = 0
+EE80 AT/HS coding
+EE83 HS? yes: HS threshold
+EE85 AT: C6D0 = 16 units (≈350 rpm)
+EE8A HS: C6D3 = 16 units (both equal)
+EE8D engine speed below threshold?
+EE8F no: cranking finished, clear bit 7
+EE93 yes: clear bit 6 (engine did not start or has stalled)
+EE95 bit 4 is taken from the old value
+EE97 bit 4 mask
+EE99 disable interrupts: interrupts also change $8029
+EE9A old bit 4
+EE9D combine
+EE9E $8029 = new operating mode flags
+EEA1 enable interrupts
+EEA2 flags $8028
+EEA5 tooth count per tick, 16 bit
+EEA8 not below C79C = 268 units (≈5960 rpm at 22.2 or ≈6490 at 24.2 rpm per unit; scale not confirmed)?
+EEAB no: do not set bit 7
+EEAD bit 7: overspeed
+EEAF hysteresis 4 units
+EEB1 engine speed + 4
+EEB2 still below the limit?
+EEB5 no: keep bit 7
+EEB7 yes: no overspeed
+EEB9 save $8028
+EEBC digital inputs
+EEBF flags $8028
+EEC2 bit 3 is the brake light switch
+EEC4 pedal released? yes: reset
+EEC6 "brake held" already set?
+EEC8 yes: continue
+EECA brake press counter
+EECD + 1 (one call = 100 ms)
+EECE less than C79A = 20 (2 s)?
+EED1 yes: save counter
+EED3 bit 3: brake held for more than 2 s
+EED7 pedal released: clear bit 3
+EED9 counter = 0
+EEDA save counter
+EEDD pressure threshold C799 = 154 (≈1.2 bar abs. [assumed])
+EEE0 pressure above threshold?
+EEE3 no: do not set bit 2
+EEE5 bit 2: pressure above 154
+EEE7 hysteresis 9
+EEE9 pressure below 145?
+EEEC no: keep bit 2
+EEEE yes: clear bit 2
+EEF0 engine speed threshold C79B = 120 units (≈2670 rpm)
+EEF3 engine speed above threshold?
+EEF6 no: do not set bit 1
+EEF8 bit 1: engine speed above 120 units
+EEFA hysteresis 4
+EEFC engine speed below 116 units?
+EEFF no: keep bit 1
+EF01 yes: clear bit 1
+EF03 save $8028
+EF06 copy of $8028 into A
+EF07 and onto the stack
+EF08 mask for the test mode check
+EF0A factory patch: the actuator test switches the pump on
+table EF0D 2 dead bytes of the old code (left under the patch)
+EF0F pop copy of $8028
+EF10 switch the pump on
+EF12 is there sync from G4/Hall ($8095.5)?
+EF14 check
+EF17 yes: continue
+EF19 pop copy
+EF1A no sync: switch the pump off
+EF1C overspeed ($8028.7)?
+EF1E no: continue
+EF20 fault bit 2214
+EF22 into the fault memory
+EF25 write
+EF28 on overspeed the pump is switched off
+EF2A no overspeed: clear bit 2214
+EF2C clear
+EF2F write
+EF32 pressure sensor faults
+EF34 any?
+EF37 yes: no pressure protection, switch the pump on
+EF39 B = $8028
+EF3A coding: PORT6.2 = 1 means manual gearbox (HS)
+EF3D HS? yes: skip the torque converter protection
+EF3F AT: all three bits 1, 2, 3 are required at once (torque converter protection [assumed])
+EF41 brake > 2 s, pressure > 154 and engine speed > 120 units all together?
+EF43 yes: switch the pump off (AT torque converter protection)
+EF45 overboost ($8028.6)?
+EF47 no: clear code 2224
+EF49 fault bit 2224
+EF4B into the fault memory
+EF4E write
+EF51 overboost: switch the pump off
+EF53 no overboost: clear bit 2224
+EF55 clear
+EF58 write
+EF5B PORT6.6 = 1: fuel pump relay J17 on [assumed]
+EF5E continue
+EF60 PORT6.6 = 0: J17 off, pump stopped [assumed]
+
+head F930
+|Factory patch for EF0A. If the actuator test is running ($80A9.7)
+|and $80F7.4 is not set, the pump is switched on without any checks.
+|Apparently this is how test step 4433 (J17) works [assumed].
+F930 actuator test running ($80A9.7)?
+F933 no: normal logic
+F935 $80F7.4 [?]
+F937 check
+F93A set: normal logic
+F93C test: switch the pump on
+F93F normal logic
+
+# ======================================================================
+# Task 3: pressure flags and overboost protection (ED20-EDF6)
+# ======================================================================
+head ED20
+|Pressure flags in $8028 and overboost protection.
+|  bit 0: pressure above 128 (≈1.0 bar abs. [assumed]), cleared below 125;
+|  bit 4: pressure above the curve C2E0 over engine speed (hysteresis 3);
+|  bit 6: overboost: pressure above the limit C220 for more than 10 consecutive
+|          calls (1 s), or above the limit plus the G42 allowance for more than 5 calls
+|          (0.5 s) (C793 = 10, C794 = 5). When warm the allowance is 0, and then
+|          0.5 s is enough. Leads to code 2224 and fuel pump shut-off (EF45).
+|Engine speed axis C210 (16 points): 40 53 67 80 93 107 120 133 147 160 173 187 200 213 220 240.
+|Limit C220: 160 173 179 198 205 205 … 205 (≈1.25 … 1.6 bar abs. [assumed]).
+|Curve C2E0: 127 131 140 156 164 168 169 168 166 166 154 141 134 128 128 128.
+ED20 pressure G71
+ED23 G71 faulty under load?
+ED26 no: use the measurement
+ED28 yes: substitute value C79E = 192
+ED2B threshold C789 = 128
+ED2E pressure above 128?
+ED2F no: do not set bit 0
+ED31 save threshold
+ED32 bit 0
+ED34 set
+ED37 write
+ED3A restore threshold
+ED3B hysteresis 3: 125
+ED3D pressure above 125?
+ED3E yes: keep bit 0
+ED40 no: clear bit 0
+ED42 clear
+ED45 write
+ED48 engine speed axis C210
+ED4B engine speed
+ED4E 16 points
+ED50 find interval
+ED53 $8014 = point index (for tables C220 and C2E0)
+ED56 fraction
+ED59 $8017 = fraction
+ED5C intake air temperature axis C6F0 = 175 165 156 146 (descending)
+ED5F intake air temperature G42 (ADC ch. 7) [assumed]
+ED62 4 points
+ED64 find interval
+ED67 push point index
+ED68 fraction
+ED6B A = fraction
+ED6C B = point index
+ED6D table C6F4 = 26 26 26 0
+ED70 X -> value
+ED71 B = fraction
+ED72 A = allowance added to the limit (26 when cold, 0 when warm)
+ED75 $8016 = allowance
+ED78 overboost limit C220 over engine speed
+ED7B A = limit
+ED7D counter "above limit without correction"
+ED80 pressure above the limit? counter + 1, otherwise 0
+ED82 save
+ED85 limit + G42 allowance
+ED88 no overflow? yes: continue
+ED8A clamp to 255
+ED8C $8016 = corrected limit
+ED8F counter "above corrected limit"
+ED92 pressure above? counter + 1, otherwise 0
+ED94 save
+ED97 curve C2E0 over engine speed
+ED9A A = curve value
+ED9C $8014 = curve value
+ED9F flags $8028
+EDA2 counter without correction
+EDA5 reached C793 = 10?
+EDA8 yes: overboost
+EDAA counter with correction
+EDAD reached C794 = 5?
+EDB0 yes: overboost
+EDB2 no: clear bit 6
+EDB6 bit 6: overboost
+EDB8 write $8028
+EDBB pressure
+EDBE X -> curve value C2E0
+EDC1 bit 4
+EDC3 bit 4 from comparison with the curve (hysteresis 3)
+EDC5 continue with the operating mode flags
+label EDC7 TAB_RPM
+head EDC7
+|TAB_RPM: value of table X over engine speed: point index in $8014,
+|fraction in $8017 (both computed by ED48).
+EDC7 point index
+EDCA X -> value
+EDCB fraction
+EDCE interpolation
+label EDD1 FLAG8028_HYST
+head EDD1
+|FLAG8028_HYST: in $8028 set the bits of mask B if A ≥ threshold [X],
+|clear them if A < threshold - 3. In between change nothing.
+EDD1 push mask
+EDD2 threshold
+EDD4 A not below threshold?
+EDD5 yes: set bits
+EDD7 threshold - 3
+EDD9 A not below?
+EDDA mask
+EDDB yes: change nothing
+EDDD no: clear bits
+EDDE clear
+EDE1 write
+EDE3 mask
+EDE4 set bits
+EDE7 write $8028
+EDEA return
+label EDEB OVER_CNT
+head EDEB
+|OVER_CNT: counter B: + 1 if pressure is above A (the limit), otherwise 0.
+|Does not overflow (stays at 255).
+EDEB limit not below pressure?
+EDEE yes: reset
+EDF0 + 1
+EDF1 no overflow? yes: return
+EDF3 stay at 255
+EDF4 return
+EDF5 counter = 0
+EDF6 return
+
+# ======================================================================
+# Task 3: plausibility of switches F60 and F81 (EC62-ED1D)
+# ======================================================================
+head EC62
+|Checking the throttle switches against pressure G71. Flags in $8093:
+|  bit 0: F60 closed (copy of the input on the previous call);
+|  bit 3: F60 faulty: closed together with F81 at pressure > 141
+|          for more than 15 calls (1.5 s). Cleared when F60 is open,
+|          F81 is closed and pressure > 141 (code 2121 [assumed]);
+|  bit 4: F60 suspicion countdown running (counter $809B);
+|  bit 1: F81 faulty: F81 closed at pressure < 77
+|          (deep vacuum) for more than 15 calls (counter $809D) (code 2123 [assumed]).
+|While there is no sync or there is a G71 fault, no checks are done.
+|Threshold C7A8 = 0, so two check branches do not work in this calibration.
+EC62 is there sync ($8095.5)?
+EC64 check
+EC67 yes: run checks
+EC69 no: skip checks
+EC6C switch flags
+EC6F G71 faults
+EC71 any?
+EC74 yes: reset suspicion of F60
+EC76 clear bit 0 first
+EC78 digital inputs
+EC7B bit 5 is F60
+EC7D open? yes: bit 0 = 0
+EC7F bit 0 = 1: F60 closed
+EC81 new state
+EC82 compare with the old one
+EC85 has F60 toggled?
+EC87 no: continue
+EC89 toggled: restart the suspicion countdown
+EC8B counter = 0
+EC8E pressure
+EC91 F60 closed?
+EC93 no: branch "F60 open"
+EC95 pressure not below C7A8 = 0: always yes
+EC98 branch is always taken
+EC9A dead instruction with C7A8 = 0
+EC9C save pressure
+EC9D digital inputs
+ECA0 bit 4 is F81
+ECA2 restore pressure
+ECA3 F81 open? yes: no suspicion
+ECA5 both closed; pressure above C7A1 = 141 (≈1.1 bar abs. [assumed])?
+ECA8 no: no suspicion
+ECAA countdown already running?
+ECAC no: start countdown
+ECAE suspicion counter
+ECB1 + 1
+ECB2 save
+ECB5 reached C7A2 = 15 (1.5 s)?
+ECB8 no: wait
+ECBA bit 3: F60 faulty
+ECBC reset counter and write
+ECBE pressure not below C7A8 = 0: always yes
+ECC1 branch is always taken
+ECC3 dead code with C7A8 = 0
+ECC5 dead code
+ECC7 dead code
+ECCA dead code
+ECCB dead code
+ECCE dead code
+ECD1 dead code
+ECD3 dead code: would have been bit 2
+ECD5 dead code
+ECD7 F60 open; pressure below 141?
+ECDA yes: no suspicion
+ECDC digital inputs
+ECDF bit 4 is F81
+ECE1 F81 open? yes: nothing proven
+ECE3 F60 open at full throttle and boost (F60 is fine) or G71 fault: clear bit 3
+ECE5 countdown not running
+ECE7 counter = 0
+ECE9 bit 4: start countdown
+ECEB counter = 0
+ECEC save counter
+ECEF save flags
+ECF2 G71 faults
+ECF4 any?
+ECF7 yes: clear bit 1
+ECF9 pressure
+ECFC not below C7A6 = 77 (≈0.6 bar abs. [assumed])?
+ECFF yes: no F81 check, counter = 0
+ED01 digital inputs
+ED04 bit 4 is F81
+ED06 open? yes: F81 is fine
+ED08 F81 closed at deep vacuum: counter
+ED0B + 1
+ED0C save
+ED0F reached 15 (1.5 s)?
+ED11 no: wait
+ED13 bit 1: F81 faulty
+ED15 reset counter
+ED17 clear bit 1
+ED19 counter = 0
+ED1A save counter
+ED1D save flags
+
+# ======================================================================
+# Task 3 (every 10 ticks = 100 ms): G42 snapshot, N80, N115, G28 check
+# ======================================================================
+head EA2C
+|TASK 3, start. Intake air temperature snapshot $8206.
+|$8206 = G42 ($8020), but it is updated only when the engine has been idling for 2 s
+|in a row (throttle closed, engine speed below 40 units).
+|While driving the snapshot is frozen, so intake heating while driving has no effect [assumed].
+|The snapshot is used to choose the N115 threshold (EAE1). The first one is taken immediately.
+EA2C snapshot never taken yet?
+EA2F yes: take it now
+EA31 throttle closed?
+EA34 no: idle counter to zero
+EA36 engine speed
+EA39 below 40 units (≈890 rpm)?
+EA3C yes: count idle time
+EA3E not idling: counter = 0
+EA41 leave the snapshot alone
+EA43 idle time
+EA46 already 20 calls (2 s)?
+EA48 yes: update the snapshot
+EA4A + 1
+EA4B save
+EA4E leave the snapshot alone for now
+EA50 intake air temperature G42
+EA53 $8206 = snapshot
+EA56 is there sync ($8095.5)?
+EA58 check
+EA5B yes: N80 and N115
+EA5D no: skip them
+head EA60
+|N80: carbon canister purge. Duty cycle $8064 = 0…31 of 32 steps
+|of a slow PWM (step 5.09 ms, period 163 ms, output in the OCF interrupt, F5FA).
+|For the first 255 calls (25.5 s) after sync there is no purging (C795).
+|After that an 8×8 map: rows by pressure (axis C7B0 = 116 103 90 77 71 64 58 51),
+|columns by engine speed (axis C7B8 = 40 53 67 80 93 107 120 160).
+|Map C7C0 is the normal one, C800 is used when $8066.1 is set [?]. At idle
+|a constant value C7AE = 8 (or C845 = 4 when $8066.1 is set).
+EA60 time counter since sync
+EA63 reached C795 = 255 (25.5 s)?
+EA66 yes: purge according to the map
+EA68 + 1
+EA69 save
+EA6C N80 duty cycle = 0
+EA6D write
+EA6F pressure axis C7B0
+EA72 8 points
+EA74 row and fraction by pressure
+EA77 engine speed axis C7B8
+EA7A 8 points
+EA7C column and fraction by engine speed; B = cell index
+EA7F map C7C0
+EA82 lambda flags [?]
+EA85 $8066.1?
+EA87 no: normal map
+EA89 yes: map C800
+EA8C map interpolation
+EA8F B = duty cycle
+EA90 throttle closed?
+EA93 no: from the map
+EA95 idle: C7AE = 8
+EA98 lambda flags
+EA9B $8066.1?
+EA9D no: 8
+EA9F yes: C845 = 4
+EAA2 $8064 = N80 duty cycle
+head EAA5
+|N115: tank vapour shut-off valve (chip reg. $19 bit 2).
+|Enabled 50 calls (5 s) after sync (C844).
+|Switched on:  pressure above 102 (96 + 6, ≈0.8 bar abs. [assumed])  or
+|              engine speed above threshold + 4.
+|Switched off: at idle, or pressure below 96 and engine speed below threshold.
+|Engine speed threshold (C840…C843): 48 units (≈1070 rpm) if the G42 snapshot is ≥ 128
+|(cold air), otherwise 58 units (≈1290 rpm). Same for AT and HS.
+EAA5 X = $8000
+EAA8 time since sync
+EAAA less than C844 = 50 (5 s)?
+EAAD yes: switch N115 off
+EAAF pressure
+EAB1 G71 faulty under load?
+EAB4 no: measurement
+EAB6 yes: substitute value 192
+EAB9 pressure - C798 (96)
+EABC below 96? yes: clear the flag
+EABE another - 6
+EAC0 between 96 and 102? yes: leave the flag unchanged
+EAC2 above 102: $809F.0 = 1
+EAC5 continue
+EAC7 below 96: $809F.0 = 0
+EACA throttle closed?
+EACD yes: switch N115 off
+EACF pressure above 102?
+EAD2 yes: switch N115 on
+EAD4 engine speed
+EAD6 manual gearbox thresholds C840/C841
+EAD9 coding: PORT6.2 = 1 means HS
+EADC HS? yes: keep
+EADE AT: C842/C843
+EAE1 G42 snapshot
+EAE4 128 or above (cold)?
+EAE6 yes: threshold 48
+EAE8 no: threshold 58
+EAE9 engine speed - threshold
+EAEB below threshold? yes: switch off
+EAED above by less than 4?
+EAEF yes: leave the state unchanged
+EAF1 bit 2 = 1: N115 on
+EAF3 write
+EAF5 bit 2 = 0: N115 off
+EAF7 chip register $19
+EAF9 write the output
+head EAFC
+|Check of the engine speed sensors while the engine is (as far as the unit knows) stationary.
+|While the chip has never counted any teeth yet ($8003.6 = 0, set by D341),
+|but manifold pressure differs from atmospheric pressure (taken at switch-on)
+|by 5 or more for 10 calls in a row (1 s), the engine is clearly turning but there is no
+|engine speed signal. Then: faults G28 and G4 ($8094 |= $F0), $8003.6 = 1
+|(the check is not run again) and exit from the actuator test (F726).
+EAFC X = $8000
+EAFF teeth already seen ($8003.6)?
+EB02 yes: no check needed
+EB04 deviation counter
+EB07 pressure
+EB0A minus atmospheric pressure at switch-on
+EB0D difference positive? yes: continue
+EB0F absolute value
+EB10 less than C78A = 5?
+EB13 yes: no deviation, counter = 0
+EB15 + 1
+EB16 less than C78B = 10 (1 s)?
+EB19 yes: save counter
+EB1B faults G28 and G4 (codes 2111, 2112)
+EB1E check done
+EB21 exit the actuator test
+EB24 continue
+EB26 counter = 0
+EB27 save counter
+
+# ======================================================================
+# Task 3: check of pressure sensor G71 (EB2A-EC5F, patch F760-F7D3)
+# ======================================================================
+head EB2A
+|G71 check. Fault flags in $8091:
+|  bit 0: F60 closed (its own copy of the input);
+|  bit 7: suspicion countdown running (counter $809C);
+|  bit 6: pressure above 243 with the throttle closed for 10 calls (1 s): sensor "stuck high";
+|  bit 5: pressure below 13 with the throttle open for 1 s: sensor "stuck low";
+|  bit 4: during the first 10 s after start the pressure never moved 13 away from atmospheric;
+|  bit 2: pressure has moved away from atmospheric (sensor is alive);
+|  bit 3: check of the first 10 s finished;
+|  bit 1: pressure does not move when it should (see EC18 and patch F760).
+|Bits 6 and 5 give code 2222, bits 4 and 1 give code 2221 (code assembly, F001).
+|Atmospheric pressure is $8004, taken when the ignition is switched on.
+|In $8093 here: bit 7 means F60 has just closed; bit 6 means waiting for the pressure
+|to drop after the throttle closes; bit 5 means the pressure has dropped.
+EB2A G71 flags
+EB2D clear bit 0 first
+EB2F digital inputs
+EB32 bit 5 is F60
+EB34 open? yes: bit 0 = 0
+EB36 bit 0 = 1: F60 closed
+EB38 new state
+EB39 compare with the old one
+EB3C has F60 toggled?
+EB3E no: clear the "just closed" flag
+EB40 toggled: restart the suspicion countdown
+EB42 is F60 closed now?
+EB44 no: clear the flag
+EB46 $8093.7: F60 has just closed
+EB48 set
+EB4B write
+EB4D clear $8093.7
+EB4F clear
+EB52 write $8093
+EB55 pressure
+EB58 F60 closed?
+EB5A no: "stuck low" check
+EB5C pressure above C7AD = 243?
+EB5F no: no suspicion
+EB61 countdown running?
+EB63 no: start it
+EB65 suspicion counter
+EB68 + 1
+EB69 save
+EB6C reached C7A3 = 10 (1 s)?
+EB6F no: wait
+EB71 bit 6: G71 "stuck high" (2222)
+EB73 counter = 0
+EB75 pressure normal: clear bit 6
+EB77 clear countdown
+EB79 pressure below C79F = 13?
+EB7C no: no suspicion
+EB7E countdown running?
+EB80 no: start it
+EB82 suspicion counter
+EB85 + 1
+EB86 save
+EB89 reached 10 (1 s)?
+EB8C no: wait
+EB8E bit 5: G71 "stuck low" (2222)
+EB90 counter = 0
+EB92 pressure normal: clear bit 5
+EB94 clear countdown
+EB96 counter = 0
+EB98 bit 7: start countdown
+EB9A counter = 0
+EB9B save counter
+EB9E any suspicion or "stuck" fault (bits 7, 6, 5)?
+EBA0 no: continue
+EBA2 yes: skip the remaining G71 checks
+EBA5 operating mode flags
+EBA8 cranking in progress? yes: skip
+EBAA check of the first 10 s finished?
+EBAC yes: checks while driving
+EBAE time counter
+EBB1 value
+EBB4 C7A4 = 100 calls (10 s) elapsed?
+EBB7 yes: pressure never moved
+EBB9 pressure
+EBBC minus atmospheric
+EBBF difference positive? yes: continue
+EBC1 absolute value
+EBC2 less than C7A0 = 13?
+EBC5 no: pressure has moved
+EBC7 yes: keep waiting
+EBCA bit 2: sensor is alive
+EBCC counter = 0
+EBCF bit 3: 10 s check finished
+EBD1 has the pressure moved?
+EBD3 yes: no fault
+EBD5 bit 4: pressure did not move within 10 s (2221)
+EBD7 continue
+EBDA pressure
+EBDD minus atmospheric
+EBE0 difference positive? yes: continue
+EBE2 absolute value
+EBE3 less than 13?
+EBE6 yes: leave bit 4 alone
+EBE8 pressure has moved: clear bit 4
+EBEA engine speed
+EBED below 40 units (≈890 rpm)?
+EBF0 yes: reset the throttle closing check
+EBF2 F60 closed?
+EBF4 no: continue
+EBF6 pressure
+EBF9 minus atmospheric
+EBFC difference positive? yes: continue
+EBFE absolute value
+EBFF less than 13?
+EC02 yes: leave bit 1 alone
+EC04 |pressure − atmospheric| ≥ 13 with the throttle closed (sensor responds): clear bit 1
+EC06 flags $8093
+EC09 waiting for the pressure to drop?
+EC0B yes: count
+EC0D has F60 just closed?
+EC0F no: continue
+EC11 start waiting for the pressure drop
+EC13 write
+EC16 continue
+EC18 F60 still closed?
+EC1A no: reset the waiting
+EC1C waiting counter
+EC1F already 10 (1 s)?
+EC22 yes: already decided
+EC24 counter
+EC27 + 1
+EC28 save
+EC2B reached 10?
+EC2E no: look at the pressure
+EC30 has the pressure dropped within 1 s?
+EC32 check
+EC35 yes: everything is fine
+EC37 no: bit 1: pressure does not drop with the throttle closed (2221)
+EC39 continue
+EC3B pressure
+EC3E minus atmospheric
+EC41 difference positive? yes: continue
+EC43 absolute value
+EC44 less than 13?
+EC47 yes: wait
+EC49 pressure has moved 13 or more away from atmospheric
+EC4B set
+EC4E write
+EC51 continue
+EC53 clear waiting and "dropped"
+EC55 clear
+EC58 write
+EC5B counter = 0
+EC5C save
+EC5F factory patch: more G71 checks
+
+head F760
+|Factory patch: two more G71 checks (bit 1 in $8091).
+|1) Full throttle (F81), engine speed not below C846 = 80 units (≈1780 rpm),
+|   and pressure differs from atmospheric by less than 13 for 30 calls
+|   in a row (3 s, C848): bit 1.
+|2) Pump enabled, N75 active ($8067/$8068 not zero), engine speed ≥ 80 units,
+|   and pressure dropped by 25 or more within 100 ms (C847; $806D is the pressure on
+|   the previous call): remember it ($806E.0). If the pressure then stays for 6 calls
+|   in a row (C849) near atmospheric: bit 1. Looks like a detached
+|   boost hose [assumed].
+F760 digital inputs
+F763 bit 4 is F81
+F765 open? yes: counter 1 to zero
+F767 engine speed
+F769 below C846 = 80 units?
+F76C yes: counter 1 to zero
+F76E pressure
+F770 minus atmospheric
+F772 difference positive? yes: continue
+F774 absolute value
+F775 not less than 13?
+F778 yes: pressure has moved, counter to zero
+F77A counter 1 ($8062) + 1
+F77C value
+F77E less than C848 = 30 (3 s)?
+F781 yes: wait
+F783 bit 1: no boost at full throttle
+F785 counter 1 = 0
+F787 empty (filler)
+F788 empty
+F789 empty
+F78A fuel pump enabled (PORT6.6)?
+F78D no: reset
+F78F N75 control, byte 1
+F791 not zero? yes: check
+F793 byte 2
+F795 zero? yes: reset
+F797 engine speed
+F799 below 80 units?
+F79C yes: reset
+F79E pressure on the previous call
+F7A0 minus the current one (drop within 100 ms)
+F7A2 pressure rose? yes: look at the flag
+F7A4 difference less than C847 = 25?
+F7A7 yes: look at the flag
+F7A9 remember: pressure dropped sharply
+F7AC save flags
+F7AE flag $806E.0 set?
+F7B1 no: counter 2 to zero
+F7B3 pressure
+F7B5 minus atmospheric
+F7B7 difference positive? yes: continue
+F7B9 absolute value
+F7BA not less than 13?
+F7BD yes: clear the flag
+F7BF counter 2 ($8090) + 1
+F7C1 value
+F7C3 less than C849 = 6?
+F7C6 yes: save flags
+F7C8 bit 1: no boost while N75 is active
+F7CA continue
+F7CC clear the flag
+F7CF counter 2 = 0
+F7D1 $8091 = G71 flags
+F7D3 on to the switch check
+
+# ======================================================================
+# Task 3: clearing codes, assembling fault memory $8000-$8002 (EF63-F0EB)
+# ======================================================================
+head EF63
+|Clearing the fault memory on request $8092.1. The request is set by: the tester via the K line
+|(DC15), the blink code state machine after outputting the codes (F40D), and the counter of starts without
+|changes in the fault memory (CD8D, after a set number of starts).
+EF63 X = $8000
+EF66 clear request?
+EF69 no: continue
+EF6B clear ECU faults (1111)
+EF6E clear sync faults (even bits)
+EF71 clear knock sensor faults
+EF74 clear knock control faults
+EF77 clear all temperature faults and the request itself
+EF7A clear knock flags $807A [?]
+EF7D clear switch faults
+EF80 clear the lambda control fault (2342)
+EF83 clear G71 faults
+EF86 check counters
+EF88 zero them
+EF8A D = 0
+EF8B B = 0
+EF8C $8098/$8099 = 0
+EF8E $807C = 0
+EF90 $80ED/$80EE = 0
+EF92 switch check counters
+EF94 and G71
+EF96 L line counter
+EF98 is there sync?
+EF9B yes: leave the cylinder counter alone
+EF9D no: cylinder counter to zero
+EF9F code byte 1
+EFA1 code byte 2
+EFA3 code byte 3
+EFA5 counter of starts without changes
+head EFA7
+|Once per trip, when engine speed first reaches 32 units
+|(≈710-770 rpm): the engine is definitely running, so the sync faults
+|(2111, 2112, 2113) set during cranking are cleared.
+EFA7 already done?
+EFAA yes: continue
+EFAC engine speed
+EFAE below 32 units?
+EFB0 yes: wait
+EFB2 remember: done
+EFB5 fault memory restored from internal RAM ($8003.3)?
+EFB8 yes: clear in the copy as well
+EFBA clear 2111-2113 in code byte 1
+EFBD continue
+EFBF disable interrupts
+EFC0 enable internal RAM
+EFC3 clear 2111-2113 in the copy
+EFC6 recalculate the checksum of the copy:
+EFC8 $41
+EFCA + $42
+EFCC + $43
+EFCE + $44
+EFD0 $40 = sum
+EFD2 disable internal RAM
+EFD5 enable interrupts
+EFD6 clear the even sync bits
+head EFD9
+|Assembling the fault memory. Each byte $8000-$8002 holds 8 codes, bit 7 first.
+|The order matches the blink code table $C928. Bits are only added
+|(the memory is "sticky"); only clearing removes them. If a byte has changed,
+|the counter of starts without changes $802B is reset to zero.
+|$8000: 7 is 1111 ECU ($8095 & $C0); 6 is 2111 G28 ($8094.6); 5 is 2112 G4 ($8094.4);
+|       4 is 2113 Hall ($8094.2); 3 is 2113 ($8094.0); 2 is 2222 G71 high ($8091.6);
+|       1 is 2222 G71 low ($8091.5); 0 is 2221 G71 not moving ($8091 & $12).
+|$8001: 7 is 2142 G61 ($80B6.6); 6 is 2144 G66 ($80B6.4); 5 is 2141 ($8051.3);
+|       4 is 2143 ($8051.2); 3 is 2123 F81 ($8093.1); 2 is 2121 F60 ($8093.3);
+|       1 is 2121 ($8093.2, never set in this calibration); 0 is 2322 G42 ($8092.5).
+|$8002: 7 is 2322 G42 ($8092.4); 6 is 2312 G62 ($8092.3); 5 is 2312 ($8092.2);
+|       4 is 2342 lambda ($8060.1); 3 is 2214 engine speed ($809F.2);
+|       2 is 2224 overboost ($809F.1); 1 is 4444 "no faults"; 0 is end of list.
+EFD9 byte 1, old value
+EFDC push for comparison
+EFDD ECU faults
+EFDF any?
+EFE2 no
+EFE4 1111
+EFE6 sync faults
+EFE9 G28?
+EFEB no
+EFED 2111
+EFEF G4?
+EFF1 no
+EFF3 2112
+EFF5 Hall?
+EFF7 no
+EFF9 2113
+EFFB Hall, second flag?
+EFFD no
+EFFF 2113
+F001 G71 faults
+F004 "high"?
+F006 no
+F008 2222
+F00A "low"?
+F00C no
+F00E 2222
+F010 "not moving"?
+F012 no
+F014 2221
+F016 write byte 1
+F019 old value
+F01A changed?
+F01D no
+F01F yes: counter of starts without changes = 0
+F022 byte 2, old value
+F025 push
+F026 knock sensor faults
+F029 G61?
+F02B no
+F02D 2142
+F02F G66?
+F031 no
+F033 2144
+F035 knock control faults
+F038 first flag?
+F03A no
+F03C 2141
+F03E second?
+F040 no
+F042 2143
+F044 switch faults
+F047 F81?
+F049 no
+F04B 2123
+F04D F60?
+F04F no
+F051 2121
+F053 F60, second flag?
+F055 no
+F057 2121
+F059 temperature faults
+F05C G42, first flag?
+F05E no
+F060 2322
+F062 write byte 2
+F065 old value
+F066 changed?
+F069 no
+F06B yes: counter = 0
+F06E byte 3, old value
+F071 push
+F072 G42, second flag?
+F074 no
+F076 2322
+F078 G62, first?
+F07A no
+F07C 2312
+F07E G62, second?
+F080 no
+F082 2312
+F084 lambda flags
+F087 lambda control fault?
+F089 no
+F08B 2342
+F08D flags $809F
+F090 overspeed?
+F092 no
+F094 2214
+F096 overboost?
+F098 no
+F09A 2224
+F09C bit 0 is the end of list, always 1
+F09E write byte 3
+F0A1 without the service bits 1 and 0
+F0A3 old value
+F0A4 without the service bits
+F0A6 changed?
+F0A7 no
+F0A9 yes: counter = 0
+F0AC is there at least one fault in the three bytes?
+F0AF + byte 2
+F0B2 yes: without 4444
+F0B4 no faults: 4444 and end of list
+F0B6 write
+F0B9 continue
+F0BB there are faults: clear 4444
+F0BD clear
+F0C0 write
+head F0C3
+|Long-lasting faults in $806E: bit 7 is $8092.7 [?], bit 6 is G71 "stuck" ($8091 & $60),
+|bit 5 is G71 "not moving" ($8091 & $12). A bit is set if the fault persists
+|for 40 calls in a row (4 s) and is cleared immediately. Counters $806F-$8071.
+F0C3 first mask bit
+F0C5 first counter
+F0C8 $8092.7 [?]
+F0CA present?
+F0CD no: clear
+F0CF persists: count
+F0D1 continue
+F0D3 clear
+F0D5 G71 "stuck"?
+F0D7 check
+F0DA no: clear
+F0DC persists: count
+F0DE continue
+F0E0 clear
+F0E2 G71 "not moving"?
+F0E4 check
+F0E7 no: clear
+F0E9 persists: count
+F0EB continue
+label F0ED LONGERR_CNT
+head F0ED
+|LONGERR_CNT: counter [X] + 1; when it reaches 40, set bit B in $806E.
+|Then X moves to the next counter, B to the next bit.
+F0ED threshold 40
+F0EF counter + 1
+F0F1 40 - counter
+F0F3 not reached yet? yes: do not set the bit
+F0F5 bit
+F0F6 set
+F0F9 write
+label F0FB LONGERR_CLR
+head F0FB
+|LONGERR_CLR: counter [X] = 0, clear bit B in $806E.
+F0FB counter = 0
+F0FD bit
+F0FE invert
+F0FF clear
+F102 write $806E
+F105 next counter
+F106 next bit
+F107 return
+F108 no G71 "not moving": clear
+head F10A
+|Rate of pressure change over 100 ms. $806D = pressure on the previous call.
+|$8066.7 = 1 means the pressure is rising. $806B = value from table C740 (rising)
+|or C748 (falling) over the absolute change. Both tables have axis 3 2 1 0,
+|values 3 2 1 0: in effect $806B = 3 for a change of less than 3, otherwise 0 [assumed].
+F10A table for rising
+F10D pressure now
+F110 pressure on the previous call
+F113 remember the current one
+F116 change = now - before
+F117 rising? yes
+F119 falling: absolute value
+F11A table for falling
+F11D clear the rising flag
+F11F disable interrupts
+F120 clear
+F123 continue
+F125 rising flag
+F127 disable interrupts
+F128 set
+F12B write $8066
+F12E enable interrupts
+F12F 4 points
+F131 table address
+F132 find interval
+F135 index
+F136 fraction
+F139 A = fraction
+F13A B = index
+F13B table address
+F13C values follow the axis (+4)
+F13E X -> value
+F13F B = fraction
+F140 interpolation
+F143 $806B = result
+
+# ======================================================================
+# Task 3: pin 5 (L line): entry into blink codes and actuator test,
+# test outputs N75/N80/N115 (F146-F225)
+# ======================================================================
+head F146
+|L line (pin 5, PORT5.6). Pin connected to ground means PORT5.6 = 0 [assumed].
+|Holding it closed for 25 calls (2.5 s) starts the output ($80A9.7 = 1).
+|While the engine has never turned ($8003.4 = 0) this is the actuator test
+|(F24D), otherwise the fault codes are output. In the test, opening the contact sets a request,
+|and the step changes on the next closing of ≥ 2.5 s: the step bit in $80AF shifts right
+|($80 J17, $40 N7, $20 N75, $10 N17, $08 N80, $04 N115).
+|The same start can come from the tester via the K line ($80F7.3).
+F146 X = $8000
+F149 port 5
+F14B port 5 snapshot
+F14E output flags
+F151 start from the tester via the K line ($80F7.3)?
+F154 no: look at pin 5
+F156 clear the tester request
+F159 start the output
+F15B flags $8003
+F15E has the engine already turned or is the test finished ($8003.4)?
+F160 yes: stop the output
+F162 port 5 snapshot
+F165 pin 5 open (PORT5.6 = 1)?
+F167 yes
+F169 closing time
+F16C already 25 calls (2.5 s)?
+F16E yes: start
+F170 + 1
+F171 save
+F174 continue
+F176 output already running?
+F178 yes: look at the step request
+F17A start the output ($80A9.7)
+F17C first test step is J17
+F17E $80AF = $80
+F181 write flags
+F183 contact open: closing time = 0
+F184 save
+F187 output running?
+F189 no: exit the test
+F18B running: request the next step ($80A9.6)
+F18D write flags
+F18F exit the actuator test
+F192 continue
+F194 next step request present?
+F196 no: continue
+F198 clear the request
+F19A current step
+F19D next step (bit to the right)
+F19E is this still an actuator step (bit $04 or higher)?
+F1A0 yes: save the step
+F1A2 X = $8000
+F1A5 actuators done ($80F7.4)
+F1A8 step $02 (end of list, display 0000)?
+F1AA no: test finished
+F1AC $80AF = new step
+F1AF write output flags
+F1B2 continue
+F1B4 stop the output ($80A9.7 = 0)
+F1B6 write
+F1B9 is there sync (engine running)?
+F1BB check
+F1BE yes: leave the test outputs alone
+F1C0 output flags
+F1C3 output running?
+F1C5 yes: test outputs
+F1C7 no: N75 (PORT2.6) = 0
+F1CA and N80/N115 at rest
+F1CC test cycle divider (5 calls)
+F1CF zero: new cycle
+F1D1 - 1
+F1D2 reached zero: new cycle
+F1D4 save
+F1D7 wait
+F1D9 test cycle = 5 calls (0.5 s)
+F1DB save
+F1DE test step
+F1E1 N75 step?
+F1E3 no
+F1E5 N75: toggle PORT2.6 every 0.5 s
+F1E8 continue
+F1EA N75 = 0
+F1ED N80 or N115 step?
+F1EF no: outputs to rest
+F1F1 toggle the phase ($80A9.5)
+F1F3 save
+F1F6 N115 step?
+F1F8 yes
+F1FA phase?
+F1FC 1: N80 off
+F1FE reg. $0B = 00
+F200 continue
+F202 reg. $0B = FF: N80 on
+F204 chip register $0B (N80)
+F206 write
+F209 N115 at rest
+F20B N115: first N80 = 0
+F20E write reg. $0B = 00
+F211 phase?
+F213 0: N115 off
+F215 1: N115 on (bit 2 of reg. $19)
+F217 write
+F219 N80 = 0
+F21C write reg. $0B
+F21F N115 off (bit 2 = 0)
+F221 chip register $19
+F223 write
+
+# ======================================================================
+# Task 3: blink code state machine (F226-F46F, patches F880-F911)
+# ======================================================================
+head F226
+|BLINK CODE STATE MACHINE. Called every 100 ms. The lamp is on when $809F.5 = 1.
+|Procedure (VAG): ground pin 5 for ≥ 2.5 s, release it — a code is output:
+|a pause, then 4 digits. Digit = N flashes of 0.5 s with 0.5 s gaps,
+|2.5 s dark between digits. The code repeats until the pin is grounded again.
+|The next grounding gives the next code. The end of the list is 0000.
+|Fault code mode ($80A9.4 = 0): bits $8000-$8002, codes from $C928.
+|Actuator test mode ($80A9.4 = 1, engine has not turned): step bit $80AF,
+|codes from $C958.
+|Cells: $80A0.7 — output in progress; $80A0.6 — code being shown; $80A0.5 — pause
+|before the digits has elapsed; $80A0.4 — digits in progress; $80A0 bits 3-0 — which digits
+|have been shown; $80A1 — bit mask, $80A2 — code number; $80A3 — flashes left
+|in the digit; $80A4 — timer (calls); $80A5/$80A6 — code, shifted by 4 bits;
+|$80A7/$80A8 — whole code for repeating; $809F.6 — pin 5 grounded;
+|$809F.4 — next code selected; $809F.7 — list finished.
+F226 session with a tester over the K-line ($80F6.3)?
+F229 check
+F22B yes — switch blink codes off
+F22D snapshot of port 5
+F230 flags $8003
+F233 has the engine turned ($8003.4)?
+F235 no — actuator test
+F237 fault code mode ($80A9.4 = 0)
+F239 clear
+F23C store
+F23F bit source — $8000
+F242 save pointer
+F245 fault code table
+F248 save pointer
+F24B continue
+F24D actuator test mode ($80A9.4 = 1)
+F24F set
+F252 store
+F255 source — step bit $80AF
+F258 save pointer
+F25B test code table
+F25E save pointer
+F261 flags $809F
+F264 to pin 5 without the speed check
+F266 flags $8003
+F269 fault memory restored and not yet confirmed ($8003.3)?
+F26B yes — switch blink codes off
+F26D factory patch: check engine speed and tester request
+F270 engine speed above C7A7 = 80 units (≈1780 rpm)?
+F273 no — carry on
+F275 X = $8000
+F278 clear "list finished" and "pin grounded"
+F27B clear $8003.1 [?]
+F27E $80A0 = 0: no output
+F280 nothing
+F281 to the lamp (via the patch)
+F284 flags $809F
+F287 list finished?
+F289 yes — lamp only
+F28B pin 5 open?
+F28D yes
+F28F pin grounded; was it also grounded on the previous call?
+F291 no — start counting
+F293 grounding time
+F296 + 1
+F297 no overflow? yes
+F299 stay at 255
+F29A save
+F29D X = $8000
+F2A0 keep only "output in progress"
+F2A3 clear "next code selected"
+F2A5 store $809F
+F2A7 clear the "code being shown" flag in $80A9.3
+F2AA the lamp is on while the pin is grounded
+F2AD remember: pin grounded
+F2AF grounding time from zero
+F2B0 save
+F2B2 pin open: clear the flag
+F2B4 store
+F2B7 output state
+F2BA output already in progress?
+F2BC yes
+F2BE grounding time
+F2C1 less than 25 (2.5 s)?
+F2C3 yes — do nothing
+F2C5 start output
+F2C7 store
+F2CA code number = 0
+F2CB store
+F2CE mask = bit 7
+F2D0 store
+F2D3 pointer to the bits
+F2D6 first byte
+F2D8 not empty? yes — search for a code
+F2DA empty — start from the second byte
+F2DC number 8
+F2DF second byte ($8001)
+F2E2 not empty? yes — search
+F2E4 start from the third byte
+F2E6 number 16
+F2E9 search for a code
+F2EB output state
+F2EE code being shown?
+F2F0 no — select a code
+F2F2 pause before the digits elapsed?
+F2F4 no — count down the pause
+F2F6 yes — digits
+F2F9 timer - 1
+F2FC reached zero?
+F2FE no — lamp off
+F301 pause elapsed
+F303 store
+F306 timer 25 (2.5 s)
+F308 via the patch
+F30B code number
+F30E next code selected ($809F.4)?
+F310 check
+F313 yes — count down the pause
+F315 via the patch
+F318 timer 25 or more?
+F31A no — to the pause
+F31C pointer to the bits
+F31F number / 8 = byte
+F321 byte found
+F323 next byte
+F324 continue
+F326 code number
+F329 mask
+F32C search from the next bit
+F32E pointer to the bits
+F331 number / 8 = byte
+F333 byte found
+F335 next byte
+F336 continue
+F338 code number
+F33B mask
+F33E is this bit set?
+F340 yes — code found
+F342 number + 1
+F343 mask right
+F344 more bits in the byte? yes
+F346 test mode?
+F348 check
+F34B no — next byte
+F34D test: number = 0
+F34E continue
+F350 next byte
+F351 beyond $8002?
+F354 yes — list finished
+F356 mask = bit 7
+F358 search
+F35A remember the mask
+F35D remember the number
+F360 next code selected
+F362 set
+F365 store
+F368 pause before the code 6 (0.6 s)
+F36A store the timer
+F36D timer still running?
+F370 no — fetch the code
+F372 - 1
+F375 lamp off
+F377 number * 2
+F378 code table
+F37B X -> code
+F37C code (4 BCD digits)
+F37E $80A5 = code
+F381 via the patch: remember the code
+F384 pause 25 (2.5 s)
+F386 store the timer
+F389 code being shown
+F38B set
+F38E store
+F391 to the lamp (on)
+F393 digits in progress?
+F395 yes
+F397 pause timer - 1
+F39A has not reached zero — lamp off
+F39C code
+F39F code 0000 (end)?
+F3A1 start the digits
+F3A3 store
+F3A6 first digit into $80A3
+F3A8 continue
+F3AA list finished
+F3AC set
+F3AF store
+F3B2 $80A0 = 0
+F3B3 store
+F3B6 timer
+F3B9 lamp off
+F3BC all 4 digits shown?
+F3BE no
+F3C0 second?
+F3C2 no
+F3C4 third?
+F3C6 no
+F3C8 fourth?
+F3CA yes — pause after the code
+F3CC timer - 1
+F3CF has not reached zero — continue
+F3D1 next flash phase
+F3D3 to the lamp
+F3D6 timer - 1
+F3D9 has not reached zero — lamp off
+F3DB keep only "output in progress"
+F3DD clear
+F3E0 store
+F3E3 the same code
+F3E6 repeat
+F3E9 code repeat
+F3EB lamp on ($809F.5)
+F3ED set
+F3F0 store
+F3F3 to the lamp
+F3F5 X = $8000
+F3F8 test mode?
+F3FB yes
+F3FD fault codes shown to the end ($802C.7)
+F400 $8003.1 [?]
+F403 repeat 0000
+F405 test: had the codes before this been shown to the end?
+F408 no
+F40A clear the flag
+F40D request to erase the fault memory [assumed]
+F410 repeat 0000
+label F412 NEXT_DIGIT
+head F412
+|NEXT_DIGIT — take the most significant digit of the code: $80A3 = upper 4 bits of $80A5,
+|the code is shifted left by 4 bits.
+F412 $80A3 = 0
+F415 code
+F418 4 shifts
+F41B most significant bit of the code
+F41C into $80A3
+F41F counter
+F420 more? yes
+F422 code without the digit
+F425 return
+label F426 BLINK_STEP
+head F426
+|BLINK_STEP — next phase: flash for 5 calls (0.5 s, lamp on),
+|gap for 5 calls (lamp off). When the flashes of a digit are used up, mark the
+|digit as shown, take the next one and keep the lamp off for 25 calls (2.5 s).
+F426 flags
+F429 flashes left
+F42C zero — digit finished
+F42E lamp on?
+F430 no — switch it on
+F432 flash finished: - 1
+F435 more left — gap
+F437 first digit not yet shown:
+F439 has this one been shown?
+F43C no — it is this one
+F43E next
+F43F continue
+F441 mark as shown
+F444 store
+F447 was it the last one (fourth)?
+F449 yes
+F44B save flags
+F44C take the next digit
+F44E restore flags
+F44F pause 25
+F451 continue
+F453 pause 25
+F455 lamp off
+F457 continue
+F459 switch on for 5 calls
+F45B lamp on
+F45D store $809F
+F460 timer
+F463 return
+F464 gap of 5 calls
+F466 switch off
+F468 lamp off ($809F.5 = 0)
+F46A clear
+F46D store
+
+head F880
+|Patch for F281: clear $80A9.3 and go to the lamp.
+F880 X = $8000
+F883 clear $80A9.3
+F886 to the lamp
+head F8A0
+|Patch for F381: remember the whole code ($80A7) and set $80A9.3
+|"code being shown" (F8B0 uses it to switch off the K-line transmitter during the blinks).
+F8A0 $80A7 = code
+F8A3 X = $8000
+F8A6 code being shown
+F8A9 back
+head F8D0
+|Patch for F308: clear $80A9.3; if $806E.3 = 0 — set $806E.4 [?].
+F8D0 X = $8000
+F8D3 clear $80A9.3
+F8D6 $806E.3?
+F8D9 set — leave it alone
+F8DB $806E.4
+F8DE back
+head F8F0
+|Patch for F315: with $806E.3 [?] the next code is selected immediately.
+F8F0 $806E.3?
+F8F2 check
+F8F5 no — normal path
+F8F7 timer
+F8FA to code selection
+F8FD normal path
+head F900
+|Patch for F26D: if no teeth have been seen yet and the tester's test is finished
+|($80F7.4) — switch blink codes off. Otherwise blink codes only at engine speed ≤ 80 units.
+F900 have teeth already been seen?
+F902 yes — check engine speed
+F904 K-line flags
+F907 $80F7.4?
+F909 set — switch blink codes off
+F90B engine speed
+F90E engine speed check
+F911 switch blink codes off
+
+# ======================================================================
+# Task 3: lamp K66 / pin 31 (F470-F549, patches F890, F8B0)
+# ======================================================================
+head F470
+|LAMP K66 (pin 31, PORT6.4). PORT6.4 = 0 — lamp on, 1 — lamp off.
+|On: with the engine stopped (lamp check), while pin 5 is grounded, under
+|the blink state machine, and on a warm engine under load if the knock sensor
+|or knock control is faulty (F51D).
+|Not on for G28/Hall and boost faults at engine speeds above 120 units [?].
+|$806E: bit 1 — engine speed above 120 units (C7A5, hysteresis 4); bits 2-4 —
+|special lamp modes for the tester [?].
+F470 X = $8000
+F473 lamp flags
+F475 clear bit 2 first
+F477 $806E.3?
+F479 set — save
+F47B pin 5 grounded?
+F47E yes — clear bit 4
+F480 synchronisation present?
+F483 no — bit 3
+F485 blink output in progress?
+F488 yes — patch
+F48A list finished?
+F48D no — bit 3
+F48F patch: flash counter for the tester [?]
+table F492 1 dead byte (left under the patch)
+F493 counter less than 12?
+F495 no — from zero
+F497 + 1
+F498 continue
+F49A from zero
+F49B $80F5 = counter 0…12
+F49D $80F4 [?]
+F49F - 2
+F4A1 below zero — without bit 2
+F4A3 compare with the counter
+F4A5 less — without bit 2
+F4A7 bit 2
+F4A9 continue
+F4AB bit 3
+F4AD clear bit 4
+F4AF store the lamp flags
+F4B1 lamp flags
+F4B4 bit 4?
+F4B6 no — normal lamp
+F4B8 bit 2?
+F4BA no — switch off
+F4BC yes — switch on
+F4BF pin 5
+F4C1 grounded?
+F4C3 yes — lamp on
+F4C5 blink output in progress?
+F4C7 check
+F4CA yes — lamp under the blink state machine
+F4CC engine speed
+F4CF threshold C7A5 = 120 units (≈2700 rpm)
+F4D2 engine speed below?
+F4D3 yes — do not set bit 1
+F4D5 save
+F4D6 bit 1
+F4D8 set
+F4DB store
+F4DE restore engine speed
+F4DF hysteresis 4
+F4E1 engine speed not below 116?
+F4E2 yes — keep bit 1
+F4E4 clear bit 1
+F4E6 clear
+F4E9 store
+F4EC lamp flags
+F4EF blink output in progress?
+F4F1 check
+F4F4 yes — leave the lamp alone
+F4F6 engine speed
+F4F9 less than 1 (engine stopped)?
+F4FB yes — lamp on
+F4FD ECU faults
+F4FF any?
+F502 yes — lamp on
+F504 engine speed above 120 units?
+F506 no
+F508 bits 5, 6?
+F50A set — lamp on
+F50C G28/Hall faults (bits 0, 2)
+F50E check
+F511 present — lamp on
+F513 pressure above 128 ($8028.0)?
+F515 check
+F518 no
+F51A $806E.7 (long-standing fault $8092.7)?
+F51B yes — lamp on
+F51D mode $8050: warm and under load (bits 6 and 5)?
+F520 invert
+F522 both set?
+F524 no — switch off
+F526 knock sensor faults
+F528 any?
+F52B yes — lamp on
+F52D $807A.4 — knock retard limit [assumed]
+F52F check
+F532 yes — lamp on
+F534 switch off: PORT6.4 = 1
+F536 store
+F538 blink codes: lamp on?
+F53A check
+F53D no — switch off
+F53F switch on: PORT6.4 = 0
+F540 mask of bit 4
+F542 disable interrupts
+F543 the other bits of PORT6
+F545 + lamp bit
+F546 store PORT6
+F548 enable interrupts
+F549 patch: K-line transmitter
+
+head F890
+|Patch for F48F: with $806E.4 — flash counter, otherwise save the flags.
+F890 bit 4?
+F892 no
+F894 counter
+F896 to counting
+F899 save the flags
+head F8B0
+|Patch: while a code is being output by blinks ($80A9.3), the SCI transmitter
+|is off and P24 (TX, pin 28) is held at 0. Otherwise the transmitter is switched on.
+|Apparently the K-line also shows the code at that time [assumed].
+F8B0 code output in progress?
+F8B3 no
+F8B5 switch off the SCI transmitter
+F8B8 P24 = 0
+F8BB continue
+F8BD transmitter on?
+F8C0 yes
+F8C2 P24 = 1
+F8C5 switch on the transmitter
+F8C8 end of task 3 — to the dispatcher
+
+# ======================================================================
+# N80 map: row/column/interpolation (F54C-F5A2)
+# ======================================================================
+label F54C N80_ROW
+head F54C
+|N80_ROW — map row by pressure: $8015 = index, $8017 = fraction.
+|Input: X = pressure axis, B = number of points. On a G71 fault — substitute value 192.
+F54C number of points onto the stack
+F54D pressure
+F550 G71 faults
+F552 check
+F555 no — measured value
+F557 substitute value C79E = 192
+F55A number of points
+F55B find the interval (axis descending)
+F55E $8015 = row index
+F561 fraction
+F564 $8017 = fraction
+F567 return
+label F568 N80_COL
+head F568
+|N80_COL — column by engine speed: $8014 = index, $8016 = fraction.
+|Output: B = row * 8 + column (cell index).
+F568 engine speed
+F56B find the interval
+F56E $8014 = column index
+F571 fraction
+F574 $8016 = fraction
+F577 row index
+F57A * 8
+F57B *
+F57C *
+F57D + column
+F580 return
+label F581 MAP8X8
+head F581
+|MAP8X8 — double interpolation in an 8×8 map: first by engine speed in its own
+|row and in the next one, then between the rows by pressure.
+|Input: X = map, B = cell index. Output: A.
+F581 X -> cell
+F582 save
+F583 engine speed fraction
+F586 value in the row
+F589 $8014 = in the row
+F58C next row (+8)
+F58E X -> cell
+F58F (address)
+F590 engine speed fraction
+F593 value in the next row
+F596 $8015
+F599 two consecutive values
+F59C pressure fraction
+F59F between the rows
+F5A2 return
+
+# ======================================================================
+# NMI: saving the fault memory on power loss (F5A3-F5DB)
+# ======================================================================
+head F5A3
+|NMI — triggered when the supply voltage drops (ignition switched off) [assumed].
+|The code bytes $8000-$8002 and the counters $802B, $802C are copied into the CPU's
+|internal RAM $41-$45, and their sum goes into $40. This RAM is powered from
+|permanent positive (pin 33) and keeps the faults with the ignition off.
+|At the next switch-on the copy is checked against the sum and restored (D13C).
+F5A3 internal RAM already enabled (copy being worked on)?
+F5A6 no — save
+F5A8 yes — exit
+F5A9 enable internal RAM
+F5AC sum = 0
+F5AD code byte 1
+F5B0 into the sum
+F5B1 copy
+F5B3 code byte 2
+F5B6 into the sum
+F5B7 copy
+F5B9 code byte 3
+F5BC into the sum
+F5BD copy
+F5BF counter of starts without changes
+F5C2 into the sum
+F5C3 copy
+F5C5 $802C (bit 7 — codes shown to the end)
+F5C8 into the sum
+F5C9 copy
+F5CB $40 = sum
+F5CD disable internal RAM (write protection)
+F5D0 flag "RAM was powered" = 1
+F5D3 copy made ($8003.3)
+F5D5 set
+F5D8 store
+F5DB return
+
+# ======================================================================
+# TASK 0 (every tick): "program running" signal, PORT2.5, ADC,
+# G62/G42 check, temperature flags (D220-D321)
+# ======================================================================
+head D220
+|TASK 0 — every tick (≈10 ms).
+|1) PORT6.7 toggles: a signal to the external circuit that the program is running.
+|2) PORT2.5 [?] = 1 at engine speed ≥ 20 units (≈440-480 rpm), only after synchronisation.
+|3) Polling of the chip's ADC: channels 0-5 -> $8019-$801E, 7 -> $8020. Channel 6 (knock)
+|   is not read here. Channel 4 ($801D) is read once — on the first tick after
+|   synchronisation ($8075.0).
+D220 toggle PORT6.7: "program running"
+D223 ADC channel number = 0
+D224 X -> $8019, first cell
+D227 synchronisation present?
+D229 check
+D22C no — leave PORT2.5 alone
+D22E engine speed
+D231 below 20 units?
+D233 no — PORT2.5 = 1
+D235 PORT2.5 = 0
+D238 continue
+D23A PORT2.5 = 1
+D23D next channel
+D23E next cell
+D23F channel 4?
+D241 no — read
+D243 synchronisation present?
+D245 check
+D248 no — skip channel 4
+D24A channel 4 already read after synchronisation?
+D24D check
+D24F yes — skip
+D251 mark: read
+D253 store $8075
+D256 channel 6 (knock)?
+D258 yes — skip
+D25A chip register $14 — ADC start
+D25C disable interrupts
+D25D marker "ADC in use by task 0"
+D260 start conversion, channel = B
+D263 enable interrupts
+D264 status register $1F
+D266 read
+D268 bit 7 = 1 — still running, wait
+D26A disable interrupts
+D26B marker still in place?
+D26E no (an interrupt used the ADC) — repeat
+D270 channel 3 (lambda)?
+D272 no — 8 bits
+D274 save the channel number
+D275 result register, high byte
+D277 select
+D27A read
+D27D low byte
+D27E select
+D281 read
+D284 $80B3/$80B4 = full lambda result
+D287 double (lambda 0…1 V occupies the lower half of the scale) [assumed]
+D288 enable interrupts
+D289 no overflow? yes
+D28B limit to 255
+D28D store into the cell
+D28F channel number
+D290 next
+D292 result register
+D294 read
+D296 store into the cell
+D298 last one ($8020)?
+D29B no — next channel
+head D29D
+|Fuel cut-off signal from J142 (pin 4, $801E): below 128 — cut-off,
+|$8077.0 = 1. It sets N7 = 40 % (E484).
+D29D flags
+D2A0 cut-off — bit 0 = 1
+D2A2 pin 4 signal
+D2A5 below 128?
+D2A7 yes — cut-off
+D2A9 no — bit 0 = 0
+D2AB store $8077
+head D2AE
+|Open-circuit and short-circuit check of the temperature sensors. Flags in $8092:
+|bit 7 — G42 faulty now; 5 — G42 below 16 (short circuit); 4 — G42 above 235 (open circuit);
+|bit 6 — G62 faulty now; 3 — G62 below 8 (short circuit); 2 — G62 above 228 (open circuit).
+|Substitute values: G42 = 194 (−20 °C per SSP), G62 = 30 (80 °C per SSP).
+|Bits 5-2 are latching (cleared by erasing) — codes 2322 and 2312.
+D2AE temperature flags
+D2B1 clear "now", keep the latching ones
+D2B3 G42
+D2B6 below C786 = 16?
+D2B9 no
+D2BB G42 short-circuited
+D2BD substitute
+D2BF above C785 = 235?
+D2C2 no — OK
+D2C4 G42 open circuit
+D2C6 substitute value C788 = 194 (−20 °C)
+D2C9 instead of the measured value
+D2CC G62
+D2CF below C784 = 8?
+D2D2 no
+D2D4 G62 short-circuited
+D2D6 substitute
+D2D8 above C783 = 228?
+D2DB no — OK
+D2DD G62 open circuit
+D2DF substitute value C787 = 30 (80 °C)
+D2E2 instead of the measured value
+D2E5 store $8092
+head D2E8
+|Temperature flags in $8075 from G62 (scale [assumed], see the legend):
+|bit 4 — not above 90 (warmer than ≈ +37 °C); bit 3 — not above 169 (warmer than ≈ +4 °C);
+|bit 2 — not above 14 (hotter than ≈ 100 °C); bit 1 — below 44 (warmer than ≈ 65 °C,
+|per SSP the switch to ignition map 1), cleared when the value becomes 49 or more.
+|$807B — the lowest temperature (largest value) since switch-on.
+D2E8 temperature flags
+D2EB clear bits 4, 3, 2
+D2ED G62 above C6BE = 90?
+D2F0 yes — do not set bit 4
+D2F2 bit 4
+D2F4 above C6C2 = 169?
+D2F7 yes
+D2F9 bit 3
+D2FB above C6CA = 14?
+D2FE yes
+D300 bit 2
+D302 below C792 = 44?
+D305 yes — bit 1
+D307 hysteresis 5
+D309 below 49?
+D30C yes — no change
+D30E colder — clear bit 1
+D310 continue
+D312 bit 1: warm (≈65 °C)
+D314 store $8075
+D317 G62
+D31A colder than before?
+D31D no
+D31F $807B = new lowest temperature
+
+# ======================================================================
+# Task 0: engine speed G28, G4 reference mark check, atmospheric pressure (D322-D3A5)
+# ======================================================================
+head D322
+|ENGINE SPEED. Each tick the chip counts the ring gear teeth (G28), registers $0C/$0D -> $8026/$8027.
+|$8018 — engine speed in units (≈22…24 rpm per unit [assumed]). From 31 units upwards —
+|the count of the last tick as is; below 31 — the average over 8 ticks (during cranking
+|the count is small and jumps). More than 255 — 255.
+|$8098 accumulates teeth between G4 marks: 540 without a mark — suspicion
+|and G4 fault (2112). The mark is handled by the interrupt (CC83).
+D322 register $0C — tooth count, high byte
+D324 X -> chip
+D327 disable interrupts
+D328 select register
+D32A high byte
+D32C register $0D
+D32D select
+D32F low byte
+D331 enable interrupts
+D332 $8026/$8027 = teeth per tick
+D335 X = $8000
+D338 any teeth?
+D339 yes
+D33B low byte
+D33C no — there were no teeth
+D33E teeth present ($8095.3)
+D341 "teeth already seen" ($8003.6)
+D344 leave the actuator test: the engine is turning
+D347 accumulate teeth between G4 marks
+D34A save
+D34D reached 540?
+D350 no
+D352 was there a G4 mark in this time ($8095.4)?
+D354 check
+D357 yes — reset
+D359 no mark: G4 fault (2112) and suspicion
+D35C continue
+D35E clear the suspicion
+D361 D = 0
+D362 (D = 0)
+D363 count from zero
+D366 clear the "mark seen" flag
+D369 teeth, low byte
+D36C high byte not zero?
+D36F no
+D371 more than 255 — 255
+D373 X = $8000
+D376 31 or more?
+D378 yes — take as is
+D37A ticks accumulated
+D37C already 8?
+D37E yes — average
+D380 sum
+D382 save
+D384 ticks + 1
+D386 do not change $8018 yet
+D388 sum over 8 ticks
+D38A / 8
+D38B (/ 8)
+D38C (/ 8)
+D38D ticks = 0
+D38F sum = 0
+D391 $8018 = engine speed
+D393 atmospheric pressure already taken ($8003.5)?
+D396 yes
+D398 G71 pressure on the first tick after switch-on
+D39A leftover of old code (changes nothing)
+D39B continue
+table D39D 2 dead bytes of old code
+D39F $8004 = atmospheric pressure
+D3A1 taken
+D3A4 atmospheric pressure
+
+# ======================================================================
+# Task 0: cold start valve N17 (D3A6-D737). PORT6.5 = 0 — open.
+# ======================================================================
+head D3A6
+|N17 — COLD START VALVE. All times in ticks (≈10 ms).
+|Altitude: $802D = point index for atmospheric pressure $8004 on axis C2B0
+|(128 122 109 102): 0 — at sea level (> 122), 3 — high altitude (≤ 102).
+|Modes (they work only after the first synchronisation, $8075.0):
+|1) Test 4443: open for 2 ticks, closed for 98, 1000 ticks in total (10 s).
+|2) Cold engine start (colder than ≈ +37 °C, $8075.4 = 0), until the
+|   post-start delay has expired: duration from the lowest temperature $807B —
+|   C664 (120 50 10 0) × 10 ticks over axis C660 (216 205 169 90), reduced
+|   in proportion to ($8079 - $801D) / $8079, where $8079 comes from C66C (214 154 79 29).
+|   Pulses by altitude: open C2B4 / closed C2B8 = 255/0 (at sea level —
+|   continuously), 20/5, 10/10, 5/10.
+|3) After start (colder than ≈ +4 °C, $8075.3 = 0): C674 (30 20 10 0) × 10 ticks
+|   over axis C670 (211 205 189 169), pulses 5 open / 10 closed.
+|4) Hot start (hotter than ≈ 100 °C, $8075.2 = 1): wait 200 ticks, then
+|   10 open / 30 closed until 400 ticks have expired (C6C3, C6C5, C6C6, C6C8).
+|5) Pressure rise (after modes 2-4, engine colder than ≈ 65 °C, throttle not
+|   closed): pressure increase over 40 ms ($8073) -> opening time from C678/C680,
+|   weighted by temperature (C690 -> C694). The second output ($8077.6) is the flag
+|   "enrichment took place" for the mixture.
+|Flags: $8075.7 — start mode in progress, .6 — start mode finished,
+|.5 — after-start mode finished; $8076.7 — valve open (mode 4),
+|.5 and .3 — modes 2-4 completed. $80AA — how many ticks are left, $80AC — pulse
+|phase timer.
+|Note: bits 0 and 1 of $8076 (D3F5-D430) compare the altitude index 0…3 with
+|thresholds 28 and 26, so they are always cleared; the branches depending on them never run.
+|Proof (checked by a script over the whole code, 2026-11-18):
+| - D3F5 is entered only from D3B6 (B = altitude index from AXIS_DN, 0…3) and
+|   by fall-through from D3ED (B = 0); D3F5-D430 is passed before every D475;
+| - $8076 is written only by D3FE-D42E, D447, D627, D648; D627/D648 write A,
+|   obtained from $8076 at D475, and bits 0/1 are not set on the way;
+| - there is no indexed write with offset $76 and no 16-bit write to $8075 anywhere.
+|Bit 2 is set only at D63B, which is reached only with bit 1 — so also never (see the header).
+|Branch D5A8-D5B5 does not run because of calibration C78F = 0 (in another firmware it may).
+|The only caveat: if a tester can write to RAM over the K-line, it could
+|set these bits manually (the KW1281 commands have not been analysed yet).
+D3A6 atmospheric pressure axis C2B0
+D3A9 4 points
+D3AB point index (A = $8004)
+D3AE $802D = altitude 0…3
+D3B1 flags $8003
+D3B4 engine has turned or test finished ($8003.4)?
+D3B6 yes — normal operation
+D3B8 N17 test step?
+D3BA check
+D3BD no — counters to zero
+D3BF test time
+D3C2 1000 ticks (10 s) elapsed?
+D3C5 yes — close
+D3C7 + 1
+D3C8 save
+D3CB phase timer
+D3CE zero — toggle
+D3D0 - 1
+D3D1 not zero — wait
+D3D3 toggle N17
+D3D6 now closed?
+D3D9 no (open)
+D3DB closed for 98 ticks
+D3DD continue
+D3DF open for 2 ticks
+D3E1 continue
+D3E3 timer = 0
+D3E4 close
+D3E7 store the timer
+D3EA to knock detection
+D3ED D = 0
+D3EE B = 0
+D3EF time = 0
+D3F2 timer = 0
+D3F5 threshold 28 (compared with the altitude index 0…3)
+D3F8 index greater than 28? never (see the header)
+D3F9 no — do not set bit 1
+D3FB save
+D3FC bit 1
+D3FE set
+D401 store
+D404 restore
+D405 threshold - 2
+D407 index greater? never (see the header)
+D408 do not clear (not executed)
+D40A save
+D40B clear bit 1
+D40D clear
+D410 store
+D413 restore
+D414 threshold C78E = 26
+D417 index greater? never (see the header)
+D418 no — do not set bit 0
+D41A save
+D41B bit 0
+D41D set
+D420 store
+D423 restore
+D424 threshold - 2
+D426 index greater? never (see the header)
+D427 do not clear (not executed)
+D429 clear bit 0
+D42B clear
+D42E store
+D431 X = 0 (for resets)
+D434 first synchronisation done ($8075.0)?
+D436 check
+D439 yes
+D43B no — close N17
+D43E temperature flags
+D441 hotter than ≈ 100 °C?
+D443 yes — hot start
+D445 not hot: treat modes 2-4 as completed for the hot start
+D447 set
+D44A store
+D44D post-start delay expired ($8029.0)?
+D44F check
+D452 yes — after start
+D454 warmer than ≈ +37 °C?
+D456 no — start mode
+D458 warm, but is the start mode already running?
+D459 yes — continue
+D45B close
+D45E was the start mode running?
+D45F no
+D461 finish it
+D463 mark: finished
+D465 store
+D468 time = 0
+D46B after-start mode finished?
+D46D no
+D46F pressure rise
+D472 after start
+D475 hot start: flags
+D478 copy
+D479 bits 5 and 3
+D47B both set?
+D47D yes — hot start completed, pressure rise
+D47F hot start
+D482 start mode already finished?
+D484 yes — close
+D486 how much is left
+D489 zero — calculate the duration
+D48B - 1
+D48C expired
+D48E save
+D491 continue
+D493 engine speed present, delay running ($8029.1)?
+D496 check
+D498 no — start mode finished
+D49A phase timer - 1
+D49D reached zero — change phase
+D49F wait
+D4A2 closed?
+D4A5 yes — open
+D4A7 altitude
+D4AA "closed" time C2B8
+D4AD by altitude
+D4AE value
+D4B0 timer
+D4B3 zero — do not close (continuous)
+D4B5 close
+D4B7 table $8079: C66C
+D4BA pointer
+D4BD axis C668
+D4C0 by the lowest temperature
+D4C2 $8079
+D4C5 duration table C664
+D4C8 pointer
+D4CB axis C660
+D4CE by the lowest temperature
+D4D0 × 10 ticks -> $80AA
+D4D2 $8079
+D4D5 copy
+D4D6 minus $801D (ADC channel 4, taken at synchronisation) [?]
+D4D9 greater than zero?
+D4DB no — duration 0
+D4DC (D = 0)
+D4DD store
+D4DF fraction = difference / $8079
+D4E2 duration, low byte
+D4E5 fraction
+D4E6 × fraction
+D4E7 round
+D4E8 + rounding bit
+D4EA low byte
+D4ED fraction
+D4EE high byte
+D4F1 × fraction
+D4F2 + low byte
+D4F5 carry
+D4F7 $80AA = duration
+D4FA zero — start mode finished
+D4FC start mode in progress ($8075.7)
+D4FE set
+D501 store
+D504 altitude
+D507 "open" time C2B4
+D50A by altitude
+D50B value
+D50D timer
+D510 zero — do not open
+D512 open
+D514 start mode finished ($8075.6)
+D516 set
+D519 store
+D51C timer = 0
+D51D store
+D520 close
+D522 to knock detection
+label D525 N17_BY_COLDEST
+head D525
+|N17_BY_COLDEST — value of table [$801E] for the lowest temperature
+|$807B, axis X (4 points). $801E is a temporary cell here (table address).
+D525 lowest temperature
+D528 4 points
+D52A find the interval
+D52D index
+D52E fraction
+D531 A = fraction
+D532 B = index
+D533 table address
+D536 X -> value
+D537 B = fraction
+D538 interpolation
+D53B return
+label D53C TIMES10
+head D53C
+|TIMES10 — $80AA = A × 10 (duration in ticks). Flag Z — result is zero.
+D53C × 10
+D53E D = A × 10
+D53F $80AA
+D542 return
+D543 warmer than ≈ +4 °C?
+D545 yes — after-start mode not needed
+D547 how much is left
+D54A zero — calculate
+D54C - 1
+D54D save
+D550 expired — finish
+D552 phase timer - 1
+D555 not zero — wait
+D557 N17
+D559 closed?
+D55B yes — open
+D55D open: close for C6C1 = 10
+D560 timer
+D563 close
+D565 after-start mode finished ($8075.5)
+D567 set
+D56A store
+D56D timer = 0
+D56E store
+D570 table C674
+D573 pointer
+D576 axis C670
+D579 by the lowest temperature
+D57B × 10
+D57D zero — finish
+D57F open for C6C0 = 5
+D582 timer
+D585 open
+D588 hot start: pulse timer
+D58B pulse in progress (bit 4)?
+D58D no
+D58F bit 0 (always 0)
+D591 set —
+D593 - 1
+D594 not finished
+D596 pulse finished
+D598 first part completed (bit 3)
+D59A store the timer
+D59C first part completed?
+D59E yes — main part
+D5A0 timer
+D5A1 zero
+D5A3 - 1
+D5A4 bit 0 (always 0)
+D5A6 set —
+D5A8 C78F = 0
+D5AB zero — completed at once (part disabled)
+D5AD (not executed with C78F = 0)
+D5B0 (not executed) start pulse
+D5B2 (not executed) open N17
+D5B5 (not executed)
+D5B7 bit 6?
+D5B9 no
+D5BB bit 1 (always 0)
+D5BD no —
+D5BF pressure rise
+D5C2 fetch
+D5C5 less than C791 = 12?
+D5C8 yes
+D5CA C790 = 0
+D5CD store the pulse timer
+D5D0 hot start finished (bit 5)?
+D5D2 yes
+D5D4 how much is left
+D5D7 zero — start
+D5D9 - 1
+D5DA save
+D5DD expired — finish
+D5DF phase timer
+D5E2 zero
+D5E4 - 1
+D5E5 save
+D5E8 wait elapsed (bit 6)?
+D5EA yes — pulses
+D5EC wait timer
+D5EF still running — closed
+D5F1 wait elapsed
+D5F3 bit 1 (always 0)?
+D5F5 (not executed)
+D5F7 phase timer
+D5FA zero — change phase
+D5FC open?
+D5FD no — closed
+D5FF yes — open
+D601 wait C6C3 = 200 ticks
+D604 timer
+D607 save
+D608 duration C6C5 = 40
+D60B × 10 = 400 ticks
+D60E restore
+D60F zero — finish
+D611 wait
+D613 times C6C6
+D616 bit 2 (always 0)?
+D618 no
+D61A (not executed) other times
+D61B open (bit 7)?
+D61C yes — close
+D61E "open" C6C6 = 10
+D620 timer
+D623 zero — closed
+D625 open (bit 7)
+D627 store
+D62A open N17
+D62D continue
+D62F phase timer
+D632 zero — start the hot start
+D634 hot start finished (bits 5 and 3)
+D636 timer = 0
+D639 close
+D63B bit 2
+D63D (not executed)
+D63F "closed" C6C8 = 30
+D641 timer
+D644 zero — stay open
+D646 clear bit 7 (closed)
+D648 store
+D64B first-part pulse in progress (bit 4)?
+D64D yes — do not close
+D64F close N17
+D652 to knock detection
+label D655 N17_RISE
+head D655
+|N17_RISE — time from the pressure increase: table [X + B] × weight A / 128,
+|up to 255. For the first 500 calls of task 1 (10 s) after start, on AT it is
+|additionally multiplied by the altitude factor $802D (4…1).
+D655 X -> value
+D656 value
+D658 × weight
+D659 × 2
+D65A overflow — 255
+D65C round
+D65D + rounding bit
+D65F overflow — 255
+D661 engine running time
+D664 less than 500 (10 s)?
+D667 coding: HS? (TIM does not change C)
+D66A HS — without the factor
+D66C 10 s elapsed — without the factor
+D66E altitude factor
+D671 ×
+D672 overflow?
+D673 yes — 255
+D675 result
+D676 return
+D678 255
+D67A return
+D67B altitude factor C2BC = 4 3 2 1
+D67E by altitude
+D681 X -> value
+D682 value
+D684 $802D = factor (the altitude index is no longer needed)
+D687 warm ≈ 65 °C ($8075.1)?
+D689 check
+D68C yes — close N17
+D68E throttle closed?
+D691 yes — close N17
+D693 coolant temperature
+D696 axis C690 = 205 147 100 44
+D699 hotter than the last point?
+D69B no
+D69D take the last one (44)
+D69F 4 points
+D6A1 find the interval
+D6A4 index
+D6A5 fraction
+D6A8 A = fraction
+D6A9 B = index
+D6AA weight 1: C694
+D6AD X -> value
+D6AE save address and fraction
+D6B1 B = fraction
+D6B2 weight 1 = 255 154 32 0
+D6B5 address
+D6B8 $801E = weight 1 (temporarily)
+D6BB B = fraction
+D6BC weight 2: C698
+D6BF X -> value
+D6C0 B = fraction
+D6C1 weight 2 = 255 154 192 64
+D6C4 $801F = weight 2 (temporarily)
+D6C7 pressure increase over 40 ms
+D6CA fetch
+D6CD 8 points
+D6CF increase axis C678 = 0 4 11 17 30 43 56 68
+D6D2 find the point
+D6D5 index
+D6D6 table 2: C688 = 0 30 50 60 150 200 200 200
+D6D9 weight 2
+D6DC enrichment flag for the mixture
+D6DF $801F
+D6E2 index
+D6E3 table 1: C680 = 0 20 25 30 35 40 50 50
+D6E6 weight 1
+D6E9 N17 opening time
+D6EC greater than what is left?
+D6EF no — finish counting the old one
+D6F1 new time
+D6F4 zero — close
+D6F6 open N17
+D6F9 continue
+D6FB timer = 0
+D6FE close N17
+D701 clear the flag
+D703 timer - 1
+D706 not zero — open
+D708 close N17
+D70B enrichment flag
+D70E greater than the counter?
+D711 no — finish counting
+D713 new value
+D716 zero — clear the flag
+D718 set the flag
+D71A counter - 1
+D71D not zero — keep the flag
+D71F mixture flags
+D722 enrichment ($8077.6)?
+D724 no
+D726 clear
+D728 store
+D72B counter = 0
+D72E continue
+D730 enrichment after the pressure rise ($8077.6)
+D732 set
+D735 store
+
+# ======================================================================
+# Task 0: per-cylinder knock detection (D738-D888)
+# ======================================================================
+head D738
+|KNOCK: processing the measurements. For each of the 5 cylinders an 8-byte record
+|from $80C0 (cylinder N — $80C0 + 8·N):
+|  +0 bit 7 — a new measurement has arrived (set by the interrupt), bit 0 — sensor signal
+|     too weak at the highest gain;
+|  +1 gain (1, 2, 4, 8) that the interrupt sets on the amplifier;
+|  +2 measurement (integrator over the knock window);
+|  +3 measurement scaled to the common scale (× $80BD / 256);
+|  +4/+5 background — slow average of the scaled measurements (16 bits);
+|  +6 smoothed measurement (half old and half new, C917 = 128);
+|  +7 new gain.
+|Knock: the scaled measurement is f/32 times greater than the background, f — table C8C0
+|(5 rows for the cylinders × 16 columns by engine speed, axis C8B0). f = 144 at
+|low engine speeds (4.5 times), 80…107 at high speeds (2.5…3.3 times).
+|Knock present — cylinder bit in $8054 (cylinder 1 = bit 7); the background is then not
+|updated. No knock — the background steps towards the measurement by 0.5 (C915).
+|Gain: background above 3 × the lower limit — gain halved,
+|background below the limit — gain doubled (not more than 8).
+D738 mask of the first cylinder (bit 7)
+D73A $80E9 = cylinder mask
+D73D record offset = 0
+D73E $80E8 = offset (8 per cylinder)
+D741 cylinder records
+D744 X -> cylinder record
+D745 flags
+D747 new measurement present?
+D749 no — to the next cylinder
+D74C clear "new measurement"
+D74E store
+D750 measurement
+D752 not below the lower limit $80BA?
+D755 yes
+D757 raise to the limit
+D75A scale $80BD
+D75D measurement × scale
+D75E round
+D761 +3 = scaled measurement
+D763 background
+D765 already present?
+D767 first measurement: background = measurement
+D769 gain 8
+D76B current
+D76D new
+D76F to the next cylinder
+D772 save X
+D773 engine speed
+D776 engine speed axis C8B0
+D779 16 points
+D77B find the point
+D77E threshold table C8C0
+D781 + column
+D782 record offset (8·N)
+D785 × 2 = 16·N — cylinder row
+D786 X -> f
+D787 f
+D789 offset
+D78C / 8 = cylinder number
+D78D (/ 8)
+D78E (/ 8)
+D78F $80EF + N
+D792 X -> cell
+D793 remember the cylinder's f
+D795 restore X
+D796 f onto the stack
+D797 background
+D799 background 64 or more?
+D79B yes — threshold 255
+D79D background × 4
+D79E (× 4)
+D79F f
+D7A0 threshold = background × 4 × f / 256
+D7A1 round
+D7A3 continue
+D7A5 threshold 255
+D7A7 pop f
+D7A8 scaled measurement
+D7AA / 2
+D7AB round
+D7AD measurement / 2 greater than the threshold?
+D7AE yes — knock
+D7B0 background
+D7B2 compare with the measurement
+D7B4 equal — no change
+D7B6 background greater — decrease
+D7B8 background + 0.5
+D7BB no overflow
+D7BD limit
+D7C0 continue
+D7C2 background - 0.5
+D7C5 did not go negative
+D7C7 zero
+D7C8 (D = 0)
+D7C9 store the background
+D7CB cylinder mask
+D7CE invert
+D7CF disable interrupts
+D7D0 clear the knock flag
+D7D3 continue
+D7D5 cylinder mask
+D7D8 disable interrupts
+D7D9 knock in this cylinder
+D7DC store $8054
+D7DF enable interrupts
+D7E0 cylinder bit
+D7E3 branch to the next instruction (does nothing)
+D7E5 measurement
+D7E7 weight of the new value C917 = 128
+D7EA measurement × weight
+D7EB save
+D7EE weight
+D7F1 256 - weight
+D7F2 smoothed
+D7F4 × (256 - weight)
+D7F5 + new
+D7F8 +6 = smoothed measurement
+D7FA gain (overwritten below)
+D7FC lower limit
+D7FF scale
+D802 limit × scale
+D803 round
+D806 $80BE = scaled lower limit
+D809 copy
+D80A × 2
+D80B × 3
+D80C $80BF = 3 × limit
+D80F background
+D811 current gain
+D813 background above 3 × limit?
+D816 no
+D818 gain already 0?
+D819 yes — leave it
+D81B halve the gain
+D81C save
+D81D background
+D81F halve
+D820 store
+D822 gain
+D823 continue
+D825 background above the limit?
+D828 yes — do not change the gain
+D82A gain 0?
+D82B no
+D82D 0 -> 1
+D82E continue
+D830 double
+D831 shift
+D832 became more than 8?
+D834 no
+D836 keep 8
+D838 continue
+D83A save
+D83B background
+D83D double
+D83E store
+D840 gain
+D841 no overflow
+D843 limit 255
+D845 background, high byte
+D847 +7 = new gain
+D849 F60 faulty?
+D84B check
+D84E yes — check the sensor
+D850 chip register $19
+D852 disable interrupts
+D853 select
+D856 read
+D859 enable interrupts
+D85A throttle closed (F60)?
+D85C yes — do not check
+D85E engine speed
+D861 below 120 units (≈2700 rpm)?
+D863 yes — do not check
+D865 gain
+D867 highest (8)?
+D869 no — do not decide
+D86B smoothed measurement
+D86D below threshold $80BB?
+D870 no — sensor OK
+D872 weak signal: bit 0
+D875 continue
+D877 clear bit 0
+D87A next cylinder (mask right)
+D87D offset
+D880 + 8
+D882 all 5 cylinders?
+D884 yes — continue
+D886 to the next cylinder
+
+# ======================================================================
+# Task 0: KW1281 diagnostics — 5-baud address reception, block exchange (D889-DAFE)
+# ======================================================================
+head D889
+|5-BAUD ADDRESS RECEPTION — over the L-line (pin 5, PORT5.6), not over K!
+|Only at engine speed ≤ 80 units (C7A7). A falling edge on the line is the start bit:
+|wait 30 ticks (middle of the first data bit), then 8 bits every
+|20 ticks (bit = 200 ms), least significant first, then the stop bit (line = 1).
+|Address $01 (engine) received — open a session ($80F6.3).
+|This gives the tick length: at 5 baud a bit = 200 ms = 20 ticks, so a tick ≈ 10 ms;
+|reading in the middle of the bit tolerates an error of up to ≈ ±10 %.
+|Cells: $80F6 — session state (bit 3 open, 2 — level of the L-line
+|on the previous tick, bits 7-4 — phase of sending the sync bytes); $80F8 — how many
+|bits are left; $80F9 — ticks until the next bit; $80FA — address being assembled.
+D889 X = $80F6 (session state)
+D88C engine speed
+D88F above 80 units (≈1780 rpm)?
+D892 yes — close the session
+D894 port 5
+D896 address reception in progress?
+D899 yes — count the bits
+D89B line level on the previous tick
+D89D remember: line = 1
+D8A0 L-line (PORT5.6) high?
+D8A2 yes
+D8A4 remember: line = 0
+D8A7 was it 1 on the previous tick?
+D8A9 no — wait
+D8AB and 1 now as well?
+D8AD yes — no edge
+D8AF falling edge: 9 bits, first read after 30 ticks
+D8B2 $80F8 = 9
+D8B5 $80F9 = 30
+D8B8 continue
+D8BA ticks until the bit - 1
+D8BD time to read the bit
+D8BF wait
+D8C1 bits left - 1
+D8C4 all 8 read — stop bit
+D8C6 bit = 1
+D8C7 line high?
+D8C9 yes
+D8CB bit = 0
+D8CC shift the bit into the address (least significant first)
+D8CF next bit after 20 ticks (200 ms)
+D8D1 timer
+D8D4 continue
+D8D6 stop bit = 1?
+D8D8 no — error, close the session
+D8DA received address
+D8DD $01 — engine?
+D8DF no — not for us
+D8E1 open the session ($80F6.3)
+D8E4 continue
+D8E6 session closed ($80F6.3 = 0)
+head D8E9
+|KW1281 SESSION. After the address the unit sends the sync byte $55 (after 29 ticks),
+|then the key words $01 (after 6) and $8A (after 2). The baud rate is set by
+|RMCR = $06 at reset [?]. The partner acknowledges each byte with its
+|inverted byte, except the last one ($03) in the block.
+|$80F7: bit 7 — key words acknowledged; 6 — time to send a byte;
+|5 — receiving a tester block; 1 — waiting for acknowledgement of our own byte.
+|$80FB — pause before sending (ticks), $80FC — last byte,
+|$80FD — response timeout (ticks, $FF — none), $80FE — byte number in the block.
+|Tester block: $8104 length, $8100 counter, $8185… title and data.
+|Own block: $8103 length, $8100+1 counter, $8105… title and data.
+D8E9 session open?
+D8EC yes
+D8EE no — end of task 0
+D8F1 session state
+D8F4 sync bytes sent (bit 7)?
+D8F6 byte already waiting to be sent?
+D8F8 yes — count down the pause
+D8FA phase 0?
+D8FC no
+D8FE pause 29 ticks
+D900 sync byte $55
+D902 continue
+D904 phase 1?
+D906 no
+D908 pause 6 ticks
+D90A key word $01
+D90C continue
+D90E pause 2 ticks
+D910 key word $8A
+D912 $80FB = pause
+D915 $80FC = byte
+D918 byte waiting to be sent
+D91B continue
+D91D pause - 1
+D920 expired
+D922 wait
+D924 byte
+D927 send to SCI
+D929 disable interrupts
+D92A state
+D92D copy
+D92E lower half
+D930 phase
+D932 next phase
+D933 combine
+D934 store
+D937 enable interrupts
+D938 not the last — next byte
+D93A wait for the response $75 (inverse of $8A) 22 ticks
+D93C timeout
+D93F exchange flags
+D942 time to send a byte?
+D945 no
+D947 yes — sending
+D94A byte received (RDRF)?
+D94D yes — parse
+D94F timeout
+D952 not running ($FF)?
+D954 yes — continue
+D956 expired?
+D957 yes
+D959 - 1
+D95C continue
+D95E key words acknowledged?
+D961 yes
+D963 attempts + 1
+D966 value
+D969 greater than 3? (before the key words $80FE is usually 0, so almost always no)
+D96B yes — restart the sync bytes
+D96D exchange reset — session closed (DCE6)
+D970 X = $8000
+D973 sync byte phase to zero (the session stays open)
+D976 timeout = $FF
+D978 continue
+D97A byte number
+D97D receiving a tester block?
+D980 yes
+D982 nothing sent?
+D983 yes — exchange reset
+D985 repeat the sending
+D988 pause 5 ticks
+D98A store
+D98D continue
+D98F whole block received?
+D992 no
+D994 yes — parse the command
+D997 timeout 10 ticks
+D999 store
+D99C byte number = 0
+D99F already waited for acknowledgement?
+D9A2 yes — exchange reset
+D9A4 waiting
+D9A7 continue
+D9A9 receive error (overrun/framing)?
+D9AC no
+D9AE reset the error
+D9B0 discard the byte
+D9B2 continue
+D9B4 read the status
+D9B6 byte
+D9B8 $80FF = received byte
+D9BB acknowledgement received
+D9BE receiving a tester block?
+D9C1 yes — save the byte
+D9C3 expected response = inverse of our own byte
+D9C6 matched?
+D9C9 no — keep waiting
+D9CB key words already acknowledged?
+D9CE yes
+D9D0 acknowledged
+D9D3 pause 5 ticks
+D9D5 store
+D9D8 byte number = 0
+D9DB save X
+D9DC first block — unit identification
+D9DF restore X
+D9E0 time to send
+D9E3 enable the SCI receive interrupt
+D9E6 to the end of task 0
+D9E9 received byte
+D9EC byte number
+D9EF not the first
+D9F1 first — block length
+D9F4 continue
+D9F6 second?
+D9F8 no
+D9FA second — block counter
+D9FD number + 1
+DA00 reply with the inverse
+DA03 continue
+DA05 last ($03)?
+DA08 yes
+DA0A save X
+DA0B number - 2
+DA0D tester block buffer $8185
+DA10 X -> location
+DA11 save the byte
+DA13 restore X
+DA14 continue
+DA16 tester block title
+DA19 $09 (acknowledgement)?
+DA1B yes
+DA1D otherwise clear $8077.5 [?]
+DA1F clear
+DA22 store
+DA25 last byte $03?
+DA27 no — error
+DA29 title
+DA2C less than $0B?
+DA2E yes — number = title
+DA30 $1B?
+DA32 no
+DA34 number $0F
+DA36 continue
+DA38 less than $10?
+DA3A yes — unknown
+DA3C $13 or more?
+DA3E yes — unknown
+DA40 $10-$12 -> $0B-$0D
+DA42 continue
+DA44 unknown command -> $0E
+DA46 × 2
+DA47 save X
+DA48 command table $DADF
+DA4B X -> address
+DA4C handler address
+DA4E execute the command
+DA50 byte number = 0
+DA53 restore X
+DA54 block reception finished
+DA57 reply
+DA59 pause before sending
+DA5C expired
+DA5E - 1
+DA61 to the end
+DA63 save X
+DA64 receiving a tester block?
+DA67 no — own block
+DA69 last received byte
+DA6C inverse — acknowledgement
+DA6D send
+DA6F byte number
+DA72 not the first
+DA74 first — length
+DA77 send
+DA79 second?
+DA7B no
+DA7D block counter
+DA80 + 1
+DA81 send
+DA83 last?
+DA86 no
+DA88 number = 0
+DA8B continue receiving the tester block
+DA8E block end $03
+DA90 to SCI
+DA92 wait for a response 101 ticks
+DA94 continue
+DA96 tester command
+DA99 $0A?
+DA9B yes — from the buffer
+DA9D $01 (RAM read)?
+DA9F yes — from memory
+DAA1 $03 (ROM read)?
+DAA3 yes — from memory
+DAA5 stream from memory ($8101)?
+DAA8 no — from the buffer
+DAAA third byte (title)?
+DAAC yes — from the buffer
+DAAE number - 3
+DAB0 memory address ($8187/$8188)
+DAB3 X -> byte
+DAB4 memory byte
+DAB6 buffer $8106
+DAB9 X -> location
+DABA copy into the buffer
+DABC send
+DABE own block buffer
+DAC1 X -> byte
+DAC2 byte
+DAC4 to SCI
+DAC6 remember for checking the response
+DAC9 number + 1
+DACC wait for a response 6 ticks
+DACE restore X
+DACF timeout
+DAD2 previous byte never acknowledged?
+DAD5 no
+DAD7 yes — to the end (exchange failure)
+DADA waiting for acknowledgement
+DADD to the end
+table DADF 32 KW1281 command table (16 addresses): $00 DAFF, $01 DB2A, $02 DBA9, $03 DB2A, $04 DBB5, $05 DC03, $06 DCDF, $07 DC03, $08 DC65, $09 DC90, $0A DCE5, $10 DBA9, $11 DCAC, $12 DBA9, others DBA9, $1B DCB4
+
+# ======================================================================
+# Task 0: KW1281 commands (DAFF-DD02)
+# ======================================================================
+label DAFF KW_IDENT
+head DAFF
+|Command $00 / start of session: identification. 3 ASCII blocks (header $F6, 11 characters)
+|from $C9C3: "447905383L ", "Motor      ", then a variant depending on coding:
+|"PMC AT/CAL.", "PMC AT/BUND", "PMC HS/CAL.", "PMC HS/BUND".
+|The next block is sent on the tester's acknowledgement ($09, DC90).
+DAFF identification blocks: 3
+DB01 $8101 = remaining
+DB04 3
+DB06 - remaining = block number 0…2
+DB07 into B
+DB08 block 2 (variant)?
+DB0A no
+DB0C coding: PORT6.2 = 1 means HS
+DB0F AT: +0
+DB11 HS: +2
+DB12 (+2)
+DB13 coding: PORT5.4 = 1 means BUND
+DB16 CAL: +0
+DB18 BUND: +1
+DB19 11 characters per string
+DB1B × number
+DB1C identification strings
+DB1F X -> string
+DB20 address to send from
+DB23 block length 14
+DB25 header $F6 (ASCII)
+DB27 store
+label DB2A KW_READMEM
+head DB2A
+|Commands $01 (read RAM) and $03 (read ROM). Tester block: byte count ($8186),
+|address ($8187/$8188). Allowed: RAM $8000-$8290; ROM only $C000-$CA04
+|(tables and calibration) and $FFE6-$FFE9 (4 bytes before the vectors). The program
+|code itself cannot be read. Reply in 16-byte blocks: header $FE (RAM)
+|or $FD (ROM); continuation on the tester's acknowledgement. Violation gives "not understood".
+DB2A how many bytes
+DB2D zero gives "not understood"
+DB2F more than 255: never happens (left in)
+DB31 (cannot happen: a byte is not more than 255)
+DB33 address
+DB36 count
+DB39 - 1
+DB3A command
+DB3D read RAM?
+DB3F yes
+DB41 ROM: address below $C000?
+DB44 yes: not allowed
+DB46 address at $FFE6 or above?
+DB49 yes: check the tail
+DB4B end
+DB4C beyond $CA04?
+DB4F yes: not allowed
+DB51 allowed
+DB53 end
+DB54 beyond $FFE9?
+DB57 yes: not allowed
+DB59 allowed
+DB5B RAM: below $8000?
+DB5E yes: not allowed
+DB60 end
+DB61 beyond $8290?
+DB64 yes: not allowed
+DB66 remember the command
+DB69 byte count
+DB6A remaining to send
+DB6D address
+DB70 remember
+DB73 address of the next chunk
+DB76 for sending
+DB79 remaining
+DB7C chunk of 16
+DB7E more than 16 remaining?
+DB7F yes
+DB81 last chunk
+DB84 nothing more remaining
+DB87 continue
+DB89 chunk of 16
+DB8C remaining - 16
+DB8D store
+DB90 address of the next chunk
+DB91 store
+DB94 command
+DB97 restore
+DB9A header $FE (RAM)
+DB9C RAM?
+DB9E yes
+DBA0 $FD (ROM)
+DBA2 byte count
+DBA5 + 3 = block length
+DBA7 store
+label DBA9 KW_NAK
+head DBA9
+|"Not understood": block with header $0A and the tester's block number.
+DBA9 block number
+DBAC into data
+DBAF header $0A
+DBB1 length 4
+DBB3 store
+label DBB5 KW_ACTTEST
+head DBB5
+|Command $04: actuator test from the tester. Only while the engine has not turned.
+|Each command is the next step (like opening contact 5). Reply $F5 is the
+|actuator number from table C9AE: 01259, 01261, 01262, 01263, 01247,
+|01241, 00767 (by the step bit $80AF; which number belongs to which actuator is [assumed]).
+DBB5 X = $8000
+DBB8 teeth already seen?
+DBBB yes: acknowledgement only
+DBBD test already finished?
+DBC0 yes: acknowledgement only
+DBC2 step
+DBC5 last one (N115)?
+DBC7 no
+DBC9 test finished
+DBCC leave the test
+DBCF acknowledgement
+DBD1 enable the test
+DBD4 request for the next step
+DBD6 set
+DBD9 store
+DBDC start from the tester
+DBDF step
+DBE2 number = 1
+DBE4 step bit
+DBE5 found
+DBE7 + 1
+DBE8 less than 7?
+DBEA yes
+DBEC no step: 0
+DBED table C9AE
+DBF0 + number
+DBF1 × 3
+DBF2 X -> entry
+DBF3 actuator number (2 bytes)
+DBF5 into data
+DBF8 header $F5
+DBFA length 5
+DBFC header of own block
+DBFF length
+DC02 return
+label DC03 KW_ERRORS
+head DC03
+|Commands $05 (erase) and $07 (read codes). As long as the fault memory has not
+|been confirmed after restoration ($8003.3), there is no reply.
+|$07: for each bit of $8000-$8002 (23 codes), 3 bytes from C966: VAG
+|number and flag. Header $FC. Numbers: 1111 → 65535, 2111 → 00513,
+|2112 → 00514, 2113 → 00515, 2222 → 00519, 2221 → 00519, 2142 → 00524,
+|2144 → 00540, 2141 → 00535, 2143 → 00536, 2123 → 00517, 2121 → 00516,
+|2322 → 00523, 2312 → 00522, 2342 → 00525, 2214 → 00543, 2224 → 00544.
+DC03 memory restored and not confirmed?
+DC05 check
+DC08 no
+DC0A yes: no reply
+DC0B X = $8000
+DC0E command
+DC11 $07: read?
+DC13 yes
+DC15 $05: erase request
+DC18 acknowledgement
+DC1B data length = 0
+DC1E bit 7 mask
+DC20 code number 0
+DC22 bit set?
+DC24 no
+DC26 save
+DC27 (save)
+DC28 (save)
+DC29 table C966
+DC2C + number
+DC2D × 3
+DC2E X -> entry
+DC2F VAG number
+DC31 temporary
+DC34 flag
+DC36 offset in the block
+DC39 data
+DC3C X -> position
+DC3D flag
+DC3F number
+DC42 store
+DC44 offset
+DC47 + 3
+DC49 store
+DC4C restore
+DC4D (restore)
+DC4E (restore)
+DC4F number + 1
+DC50 all 23?
+DC52 yes
+DC54 next bit
+DC55 more in this byte
+DC57 next byte
+DC58 bit 7 mask
+DC5A continue
+DC5C data length
+DC5F + 3
+DC61 header $FC
+DC63 store
+label DC65 KW_READING
+head DC65
+|Command $08: one ADC value. Channel number 0…7 ($8186) -> cell $8019+N:
+|0 pressure, 1 voltage, 2 G62, 3 lambda (10 bits, 2 bytes), 4 $801D [?],
+|5 cut-off signal (J142), 6 $801F (temporary cell for N17), 7 G42.
+|Reply $FB, 2 bytes. Above 7 gives "not understood".
+DC65 ADC cells
+DC68 channel number
+DC6B X -> cell
+DC6C value
+DC6E channel number
+DC71 not above 7?
+DC73 yes
+DC75 "not understood"
+DC78 lambda (3)?
+DC7A yes
+DC7C high byte = 0
+DC7D continue
+DC7F 10 bits of lambda
+DC82 align
+DC83 low byte
+DC84 high byte
+DC85 two bits
+DC87 into data
+DC8A header $FB
+DC8C length 5
+DC8E store
+label DC90 KW_ACK
+head DC90
+|Command $09 (acknowledgement): next identification block, or next memory
+|chunk, or own acknowledgement.
+DC90 identification blocks remaining?
+DC93 no
+DC95 - 1
+DC96 store
+DC99 finished
+DC9B next identification block
+DC9E memory chunks remaining?
+DCA1 no
+DCA3 next chunk
+DCA6 header $09: acknowledgement
+DCA8 length 3
+DCAA store
+label DCAC KW_CMD11
+head DCAC
+|Command $11: set $8077.5 [?] (cleared by any tester block except $09).
+DCAC X = $8000
+DCAF $8077.5
+DCB2 acknowledgement
+label DCB4 KW_CMD1B
+head DCB4
+|Command $1B (factory): parameter $8186 = 9 clears $80F7.0;
+|0, 1, 2, 4, 8 set $8205 = parameter and $80F7.0 = 1 (used in IRQ1, CC5E) [?].
+DCB4 X = $8000
+DCB7 parameter
+DCBA 9?
+DCBC no
+DCBE clear the mode
+DCC1 acknowledgement
+DCC3 0?
+DCC5 yes
+DCC7 1?
+DCC9 yes
+DCCB 2?
+DCCD yes
+DCCF 4?
+DCD1 yes
+DCD3 8?
+DCD5 no: acknowledgement only
+DCD7 $8205 = parameter
+DCDA enable the mode
+DCDD acknowledgement
+label DCDF KW_END
+head DCDF
+|Command $06: end of session. $0A: repeat the last block (DCE5, does nothing).
+DCDF X = $8000
+DCE2 close the session
+DCE5 return
+head DCE6
+|Reset of the communication state (no session or a fault).
+DCE6 X = $8000
+DCE9 keep only the L line level
+DCEC enable the SCI receive interrupt
+DCEF A = 0
+DCF0 empty
+DCF1 empty
+DCF2 block counter = 0
+DCF5 byte number = 0
+DCF7 identification blocks = 0
+DCFA memory chunks = 0
+DCFD $FF
+DCFE timeout not running
+DD00 in $80F7 keep only bit 4
+
+# ======================================================================
+# N7: percent -> timer ticks (DD06)
+# ======================================================================
+label DD06 N7_TO_TICKS
+head DD06
+|N7_TO_TICKS: $805D = D × 214 / 256, where D = A:B is the N7 duty cycle in percent
+|(A whole part, B fraction). 100 % = 21400 ticks = the whole period at 71.8 Hz.
+|X points to a temporary cell.
+DD06 whole percent
+DD07 214
+DD09 fraction × 214
+DD0A high byte into the temporary cell
+DD0C 214
+DD0E B = whole part
+DD0F whole part × 214
+DD10 + fraction
+DD12 carry
+DD14 $805D = N7 time in ticks
+DD17 return
+
+# ======================================================================
+# TASK 1 (every 2 ticks = 20 ms): modes $8050, knock parameters,
+# knock sensor check, ignition timing at idle (DD18-...)
+# ======================================================================
+head DD18
+|TASK 1: every 2 ticks (≈20 ms).
+|Mode bits $8050:
+|  5 warm: G62 below C6DE = 39 (≈70 °C [assumed]; per SSP knock control works from 70 °C),
+|      cleared from 42;
+|  6 load: pressure above C6DF = 90 (≈0.7 bar abs. [assumed]), cleared below 87;
+|  4 voltage OK: set at 95…149, cleared below 90 or from 155;
+|  7 knock control enabled: warm and load, not cranking,
+|      throttle not closed, no blink code output in progress.
+DD18 warm-up threshold C6DE = 39
+DD1B coolant temperature
+DD1E warmer than the threshold?
+DD1F no
+DD21 save
+DD22 bit 5: warm
+DD24 set
+DD27 store
+DD2A restore
+DD2B hysteresis 3
+DD2D colder than 42?
+DD2E no: leave it
+DD30 yes: clear bit 5
+DD32 clear
+DD35 store
+DD38 pressure
+DD3B G71 faulty under load?
+DD3E no
+DD40 substitute value 192
+DD43 load threshold C6DF = 90
+DD46 pressure above?
+DD47 no
+DD49 save
+DD4A bit 6: load
+DD4C set
+DD4F store
+DD52 restore
+DD53 hysteresis 3
+DD55 pressure above 87?
+DD56 yes: leave it
+DD58 clear bit 6
+DD5A clear
+DD5D store
+DD60 voltage
+DD63 below 90?
+DD65 yes: clear
+DD67 below 95?
+DD69 yes: no change
+DD6B below 150?
+DD6D yes: set
+DD6F below 155?
+DD71 yes: no change
+DD73 clear bit 4: voltage out of range
+DD75 clear
+DD78 store
+DD7B continue
+DD7D bit 4: voltage OK
+DD7F set
+DD82 store
+DD85 blink code list finished?
+DD87 check
+DD8A yes: decide by mode
+DD8C blink code output in progress?
+DD8E check
+DD91 yes: no knock control
+DD93 mode flags
+DD96 cranking: no control
+DD98 throttle closed?
+DD9B yes: no control
+DD9D mode
+DDA0 copy
+DDA1 invert bits 6, 5
+DDA3 warm and load?
+DDA5 no: no control
+DDA7 bit 7: knock control enabled
+DDA9 continue
+DDAB clear bit 7
+DDAD store $8050
+head DDB0
+|Knock parameters by engine speed (no interpolation, nearest lower point
+|of axis C850 = 10 14 20 30 50 70 90 110 130 150 170 190 210 230 250 255):
+|$80B7/$80B8: measurement window (C860, C870) [assumed]; $80BA: lower measurement limit
+|(C880); $80BB: "sensor silent" threshold (C890 = 5); $80BD: scale (C8A0).
+DDB0 engine speed
+DDB3 axis C850
+DDB6 16 points
+DDB8 find the point
+DDBB C860
+DDBD C870
+DDBF $80B7/$80B8
+DDC2 C880
+DDC4 $80BA: lower limit
+DDC7 C890
+DDC9 $80BB: "silent" threshold
+DDCC C8A0
+DDCE $80BD: scale
+DDD1 engine speed axis C210
+DDD4 engine speed
+DDD7 16 points
+DDD9 find the interval
+DDDC $800C = number
+DDDF fraction
+DDE2 $800D = fraction
+DDE5 number
+DDE8 table C230 (11 … 80)
+DDEB X -> value
+DDEC fraction
+DDEF interpolation
+DDF2 $804F [?]
+DDF5 number
+DDF8 table C240 (16 … 100)
+DDFB X -> value
+DDFC fraction
+DDFF interpolation
+DE02 $804E [?]
+head DE05
+|Knock sensor check. Cylinders 1-2 use G61, 3-5 use G66 (table C914,
+|C910-C913: 0 = G61, FF = G66; matches the wiring diagram). If all cylinders of a
+|group have the "sensor silent" flag, count; 150 calls in a row (3 s) set a fault:
+|G61 sets $80B6 bits 7 and 6 (2142), G66 sets bits 5 and 4 (2144). Bits 3/2: the group
+|has been checked.
+DE05 group table
+DE08 pointer
+DE0B entry of the first cylinder
+DE0E pointer
+DE11 group of cylinder 1 (C914)
+DE14 G61 flag = 1
+DE16 G66 flag = 1
+DE17 group G66?
+DE19 yes
+DE1B cylinder entry
+DE1E AND "silent" into group G61
+DE20 save
+DE21 group G61 was checked
+DE23 continue
+DE25 cylinder record
+DE28 AND "silent" into group G66
+DE2A save
+DE2B group G66 was checked
+DE2D set
+DE30 store
+DE33 restore
+DE34 save
+DE35 next record (+8)
+DE37 X
+DE38 restore
+DE39 store
+DE3C group pointer
+DE3F last cylinder?
+DE42 yes
+DE44 next
+DE45 store
+DE48 to the next cylinder
+DE4A save
+DE4B G61 checked?
+DE4E test
+DE50 yes
+DE52 no — G61 flag = 0
+DE53 (A = 0)
+DE54 (save)
+DE55 G66 checked?
+DE58 test
+DE5A yes
+DE5C no — G66 flag = 0
+DE5D G61 flag
+DE5E silent?
+DE5F no
+DE61 G61 counter
+DE64 150 (3 s)?
+DE66 yes — fault
+DE68 + 1
+DE69 store
+DE6C continue
+DE6E G61 faulty (2142)
+DE70 set
+DE73 store
+DE76 continue
+DE78 counter = 0
+DE7B clear "present now"
+DE7D clear
+DE80 store
+DE83 G66 silent?
+DE84 no
+DE86 G66 counter
+DE89 150?
+DE8B yes — fault
+DE8D + 1
+DE8E store
+DE91 continue
+DE93 G66 faulty (2144)
+DE95 set
+DE98 store
+DE9B continue
+DE9D counter = 0
+DEA0 clear "present now"
+DEA2 clear
+DEA5 store
+head DEA8
+|IGNITION: mode selection. $8088.2 = throttle closed (copy of F60).
+|Cranking — fixed timing C6CB (E081). Throttle open — map (DFC6).
+|Idle — timing by altitude and temperature ($800F, table C2D0) + DLS.
+DEA8 digital inputs
+DEAB X = $8000
+DEAE F60 closed?
+DEB0 no
+DEB2 $8088.2 = 1
+DEB5 continue
+DEB7 $8088.2 = 0
+DEBA cranking timing C6CB
+DEBD mode flags
+DEC0 not cranking
+DEC2 cranking — timing C6CB
+DEC5 throttle closed?
+DEC8 yes — idle
+DECA no — ignition map
+head DECD
+|Idle: timing correction $800F by altitude and coolant temperature —
+|table C2D0 4×4 (row — altitude 0…3, column — G62 on axis C2CC = 197 189 180 158).
+|Values 0…8, larger when cold and at sea level.
+|Timing units [assumed]: value v -> $8022 = (v + 40) × 0.75 - 30 half-teeth
+|(1 half-tooth = 1.333°), so 1 unit ≈ 1°. Larger v — later spark.
+DECD barometric pressure
+DED0 axis C2B0
+DED3 4 points
+DED5 altitude index
+DED8 × 4
+DEDA table row
+DEDB save
+DEDE temperature axis C2CC
+DEE1 G62
+DEE4 4 points
+DEE6 find interval
+DEE9 index
+DEEA fraction
+DEED A = fraction
+DEEE B = index
+DEEF + row
+DEF2 table C2D0
+DEF5 X -> value
+DEF6 B = fraction
+DEF7 interpolation
+DEFA $800F = idle correction
+DEFD engine speed
+DF00 below 40 units (≈890 rpm)?
+DF03 yes — DLS
+DF05 idle above 890 rpm: axis C250 / timing C260
+DF08 16 points
+DF0A timing = 45 48 50 52 55 55 55 52 50 45 40 35 30 24 20 20
+DF0C to conversion (without correction $800F)
+head DF0E
+|DLS — idle stabilisation via timing below 40 units (≈890 rpm).
+|Thresholds AT C6D0 / HS C6D3 = 16 28 30 units (identical):
+|  below 16 (≈350 rpm) — cranking timing C6CB = 50;
+|  30 and above — C6D8 = 51;
+|  in between, if the engine has started ($8029.6) — from table C6D6 = 45 45 51
+|  (the lower the speed, the earlier the spark — the engine picks up);
+|  otherwise (not started yet) — C6CC = 50 below 28, C6CD = 48 from 28.
+|The correction $800F is added to the result.
+DF0E DLS table C6D6
+DF11 pointer
+DF14 AT thresholds
+DF17 coding: HS?
+DF1A no
+DF1C HS thresholds
+DF1F below 16?
+DF21 no
+DF23 cranking timing 50
+DF26 continue
+DF28 30 and above?
+DF2A no
+DF2C 51
+DF2F continue
+DF31 engine started?
+DF33 test
+DF36 yes — from the table
+DF38 below 28?
+DF3A yes
+DF3C 48
+DF3F continue
+DF41 50
+DF44 + idle correction
+DF47 to timing conversion
+DF4A 3 points
+DF4C find interval
+DF4F timing from table C6D6
+DF51 continue
+label DF53 TAB16_RPM
+head DF53
+|TAB16_RPM — axis X (B points) followed by the table; value by engine speed.
+DF53 axis address
+DF56 number of points
+DF59 find interval for A
+DF5C index + axis length = index in the table
+label DF5F TAB_INTERP
+head DF5F
+|TAB_INTERP — interpolation of table [$800C] by index B and fraction (A = value).
+DF5F index
+DF60 fraction
+DF63 A = fraction
+DF64 B = index
+DF65 address
+DF68 X -> value
+DF69 B = fraction
+DF6A interpolation
+DF6D return
+label DF6E MAP_ROW
+head DF6E
+|MAP_ROW — map row by pressure (axis X, descending): $800D = index,
+|$800F = fraction. On a G71 fault the substitute value 192 is used.
+DF6E number of points
+DF6F pressure
+DF72 G71 faults
+DF74 test
+DF77 none
+DF79 substitute value
+DF7C number of points
+label DF7D ROW_DN
+DF7D find interval
+DF80 $800D = row
+DF83 fraction
+DF86 $800F = fraction
+DF89 return
+label DF8A RPM_COL
+head DF8A
+|RPM_COL — column by engine speed (axis X): $800C = index, $800E = fraction.
+|Output: B = row × 16 + column.
+DF8A engine speed
+DF8D find interval
+DF90 $800C
+DF93 fraction
+DF96 $800E
+DF99 row
+DF9C × 16
+DF9D (× 16)
+DF9E (× 16)
+DF9F (× 16)
+DFA0 + column
+DFA3 return
+label DFA4 MAP16
+head DFA4
+|MAP16 — bilinear interpolation in a 16×16 map (X = map, B = cell).
+DFA4 X -> cell
+DFA5 save
+DFA6 engine speed fraction
+DFA9 within its own row
+DFAC $800C
+DFAF next row (+16)
+DFB1 X
+DFB2 X -> cell
+DFB3 engine speed fraction
+DFB6 in the next row
+DFB9 $800D
+DFBC two values
+DFBF pressure fraction
+DFC2 between rows
+DFC5 return
+head DFC6
+|MAIN IGNITION MAP 16×16: rows — pressure (axis C200 = 192 … 51),
+|columns — engine speed (axis C210). Map C000 (map 1, for Super) — with a warm
+|engine ($8050.5); C100 (map 2) — when cold or when flag $807A.7 is set
+|(frequent knock, then also $8051.5) [assumed from SSP: map 2 for low octane].
+DFC6 pressure axis C200
+DFC9 16 points
+DFCB row
+DFCD speed axis C210
+DFD0 16 points
+DFD2 column, B = cell
+DFD4 warm?
+DFD6 test
+DFD9 no — map 2
+DFDB map 1 (C000)
+DFDE $807A.7?
+DFE0 test
+DFE3 no — map 1
+DFE5 X = $8000
+DFE8 mark $8051.5 and take map 2
+DFEB map 2 (C100)
+DFEE timing from the map
+DFF0 $800C = timing
+head DFF3
+|Timing correction by engine running time (table C2C4 = 10 8 8 0 on axis C2C0 =
+|24 28 35 47 in units of 5.12 s, i.e. ≈ 123…241 s). The decision is made once, when
+|$8060.0 appears [?]: if that happened 10-20 s or 41-56 s after start —
+|the correction is active ($807A.2), otherwise — never ($807A.1). Only at engine speed
+|below 120 units and pressure below 128. Purpose — [?].
+DFF3 X = $8000
+DFF6 $8060.0?
+DFF9 no — without correction
+DFFB flags $807A
+DFFD decided "never"?
+DFFF yes
+E001 decided "active"?
+E003 yes
+E005 running time, high byte (in 5.12 s steps)
+E008 zero — too early
+E00A less than 2?
+E00C yes — never
+E00E less than 4?
+E010 yes — active
+E012 less than 8?
+E014 yes — never
+E016 less than 11?
+E018 yes — active
+E01A never ($807A.1)
+E01D continue
+E01F active ($807A.2)
+E022 engine speed
+E024 not below C554 = 120?
+E027 yes — without correction
+E029 pressure
+E02B G71 faults?
+E02E none
+E030 substitute value
+E033 not below C555 = 128?
+E036 yes — without correction
+E038 running time
+E03A 4 points
+E03C axis C2C0
+E03F find interval
+E042 index
+E043 fraction
+E046 A = fraction
+E047 B = index
+E048 table C2C4
+E04B X -> value
+E04C B = fraction
+E04D correction
+E050 continue
+E052 correction 0
+E053 + timing
+E056 Hall sender fault ($8094.2)?
+E058 test
+E05B no
+E05D + C557 = 4 (later)
+E060 $800C
+E063 pressure
+E066 below 102 (≈0.8 bar abs.)?
+E068 yes — without air correction
+E06A G42 axis C69C = 204 156 128 109
+E06D intake air temperature
+E070 4 points
+E072 point (without interpolation)
+E075 table C6A0 = 60 60 61 62
+E078 X -> value
+E079 value
+E07B - 60: correction 0…+2 (warmer — later)
+E07D timing
+E080 + correction
+head E081
+|Conversion of timing to half-teeth: $8022 = (timing + 40) × 192 / 256 - 30.
+|$800C = how much earlier the timing became compared to the previous one (for smoothing).
+|During cranking a copy goes to $8023, at idle — to $808F.
+E081 + 40
+E083 × 0.75
+E085 (× 0.75)
+E086 round
+E087 (round)
+E089 - 30
+E08B B = new timing
+E08C old timing
+E08F $8022 = new timing (half-teeth)
+E092 old - new
+E093 not below zero
+E095 0
+E096 $800C = advance step
+E099 cranking?
+E09C no
+E09E $8023 = cranking timing
+E0A1 throttle closed ($8088.2)?
+E0A3 test
+E0A6 no
+E0A8 $808F = idle timing
+E0AB step = 0
+E0AC store
+E0AF counter $8089
+E0B2 zero
+E0B4 - 1
+E0B5 store
+head E0B8
+|Softening the jerk when the throttle opens after idle — manual gearbox (HS) only [assumed].
+|Conditions: warm ($8088.4: G62 ≤ 39, cleared above 42), throttle switch F60 OK,
+|engine running longer than 30 s ($8029.2). Throttle was closed for ≥ 25 calls (0.5 s) —
+|"armed" ($8088.5). On opening: strength k = (closed time - 25) × 5 (up to 255),
+|by engine speed (axis C270): $8089 = C280 × k / 256 — addition to N7 (decreases by 1 per
+|call), $808A = C290 × k / 256 — timing retard, $808B = C2A0 — timing return step
+|(executed by the interrupt, CE03). $8088.7 — mode active.
+E0B8 X = $8000
+E0BB coding: HS?
+E0BE AT — not needed
+E0C0 G62
+E0C3 colder than 42?
+E0C5 yes — clear "warm"
+E0C7 colder than 39?
+E0C9 yes — leave unchanged
+E0CB $8088.4: warm
+E0CE continue
+E0D0 clear $8088.4
+E0D3 F60 faults
+E0D6 present?
+E0D8 yes — do not run
+E0DA warm?
+E0DD no — do not run
+E0DF engine running longer than 30 s?
+E0E2 test
+E0E4 no — do not run
+E0E6 throttle closed time
+E0E9 throttle closed?
+E0EC no — it was opened
+E0EE + 1
+E0EF no overflow
+E0F1 255
+E0F2 store
+E0F5 less than 25 (0.5 s)?
+E0F7 yes — wait
+E0F9 armed ($8088.5)
+E0FC continue
+E0FE time = 0
+E101 was it armed?
+E104 no
+E106 blink code output active?
+E108 test
+E10B yes — do not run
+E10D time - 25
+E10F × 5
+E111 (× 5)
+E112 above 255?
+E113 no
+E115 255
+E117 $800D = strength k
+E11A calculate
+E11C clear "armed"
+E11F clear "mode active"
+E122 continue
+E124 engine speed
+E127 16 points
+E129 axis C270
+E12C find point
+E12F table C280 (N7 addition)
+E132 X -> value
+E133 value
+E135 × k
+E138 (× k)
+E139 round
+E13A (round)
+E13C $8089 = addition to N7
+E13F C290 (timing retard)
+E141 × k
+E144 (× k)
+E145 round
+E146 (round)
+E148 $808A = retard
+E14B C2A0 (return step)
+E14D $808B
+E150 X = $8000
+E153 clear "armed"
+E156 disable interrupts
+E157 mode active ($8088.7, .3)
+E15A mode active?
+E15D enable interrupts
+E15E no
+E160 timing
+E163 + step
+E166 not earlier than idle timing?
+E169 yes
+E16B idle timing
+E16E + retard
+E171 (+0)
+E173 $808E = initial retarded timing
+E176 patch: retard on sudden throttle opening
+head F800
+|Factory patch: timing retard on a rapid pressure rise with a warm engine
+|(G62 ≤ 63, throttle not closed, mode E0B8 not active). Pressure rise over 40 ms
+|($8073) on axis F7E0 = 0 4 11 15 30 43 56 68 -> F7E8 = 0 0 0 6 6 6 6 6:
+|a rise of 15 or more gives a retard of 6 units. The largest is stored ($8213), then
+|the retard $8211 = (25 - n) × 10 × $8213 / 256 decays over 25 calls (0.5 s).
+|$8211 is added to the timing in the interrupt (F870).
+F800 G62
+F803 colder than 63?
+F806 yes — reset
+F808 throttle closed?
+F80B yes — reset
+F80D mode E0B8 active ($808B)?
+F80F test
+F812 yes — reset
+F814 pressure increase
+F817 zero — decrease only
+F819 8 points
+F81B axis F7E0
+F81E find interval
+F821 index
+F822 fraction
+F825 A = fraction
+F826 B = index
+F827 table F7E8
+F82A X -> value
+F82B B = fraction
+F82C retard
+F82F zero?
+F830 yes — decreasing
+F832 greater than stored value?
+F835 no
+F837 store
+F83A continue
+F83C decreasing in progress?
+F83F no — reset
+F841 counter n
+F844 + 1
+F845 write
+F848 n - 25
+F84B expired — reset
+F84D 25 - n
+F84E B = 10 (F7F2)
+F851 (25 - n) × 10
+F852 stored retard
+F855 × retard; high byte = / 256
+F856 low byte ≥ 128?
+F857 no — no rounding
+F859 + 1
+F85A $8211 = retard
+F85D continue
+F85F retard = 0
+F862 stored value = 0
+F865 A = 0
+F866 n = 0
+F869 engine speed
+F86C return
+head F870
+|Patch in the interrupt: add retard $8211 to the timing angle.
+F870 + retard
+F873 $807D = angle
+F876 return
+head E179
+|$8021 = speed × 256 / 255 (≈ speed) — for spark delay correction [?].
+|COIL DWELL. Below 16 speed units (or below 12 until speed first
+|reaches 16, $8092.0) — constant $8024 = 88. Otherwise dwell time T from battery
+|voltage: axis C918 = 80 90 100 110 120 140 160 200 (≈8…20 V [assumed]) ->
+|C920 = 90 70 55 46 40 32 27 19. Dwell angle = T × speed / 69 half-teeth;
+|$8024 = 108 - angle (dwell start point from the cylinder mark), at least 27.
+|108 half-teeth = 144° = spacing between cylinders. Given the speed scaling,
+|T ≈ 7 × time in ms [assumed]: at 14 V (T = 32) ≈ 4.6 ms.
+E179 255
+E17B A × 256 / 255
+E17E × 1
+E180 round
+E181 (round)
+E182 (round)
+E184 $8021
+E187 temperature flags
+E18A engine speed
+E18D 16 or above?
+E18F yes — from voltage
+E191 below 12?
+E193 yes — constant
+E195 already reached 16 before?
+E197 yes — from voltage
+E199 disable interrupts
+E19A clear "reached"
+E19C write
+E19F enable interrupts
+E1A0 constant 88
+E1A2 write
+E1A4 disable interrupts
+E1A5 "reached 16" ($8092.0)
+E1A7 write
+E1AA enable interrupts
+E1AB voltage axis C918
+E1AE voltage
+E1B1 8 points
+E1B3 T from table C920
+E1B6 divisor 69
+E1B8 integer part = 0
+E1BB - 69
+E1BC below zero — done
+E1BE integer + 1
+E1C1 repeat
+E1C3 remainder
+E1C4 remainder × 256 / 69
+E1C7 $800E = fractional part of T / 69
+E1CA engine speed
+E1CD temporary
+E1D0 fraction × speed
+E1D1 round
+E1D2 (round)
+E1D4 $800F
+E1D7 integer part
+E1DA engine speed
+E1DD integer × speed
+E1DE + fraction
+E1E1 + carry
+E1E4 overflow — minimum
+E1E6 above 255 — minimum
+E1E8 108
+E1EA - dwell angle
+E1EB below zero — minimum
+E1ED at least 27?
+E1EF yes
+E1F1 minimum 27
+E1F3 $8024 = dwell start
+head E1F6
+|Return from map 2 to map 1. If map 2 is active ($807A.7) and there are no knock
+|control faults ($8051 bits 1, 0): counter $8086 (calls every 20 ms).
+|When its high byte (step 5.12 s) reaches the speed-dependent threshold (axis C6E0 =
+|40 80 120 160 -> C6E4 = 12 20 27 35, i.e. ≈ 61…179 s) and the knock retard
+|in all cylinders ($802F-$8033) is zero — return to map 1.
+E1F6 X = $8000
+E1F9 $807A
+E1FB map 2 active?
+E1FD no — counter to zero
+E1FF knock control faults?
+E202 yes — counter to zero
+E204 counter
+E206 + 1
+E207 overflow — do not store
+E209 write
+E20C speed axis C6E0
+E20F engine speed
+E212 4 points
+E214 find point
+E217 threshold C6E4
+E21A X -> threshold
+E21B threshold
+E21D has the counter high byte reached the threshold?
+E220 no — wait
+E222 X = $8000
+E225 retard of cylinders 1 and 2
+E227 + 3 and 4
+E229 + 5
+E22B + sum
+E22C any retard anywhere?
+E22E yes — wait
+E230 disable interrupts
+E231 clear $8051 bits 5, 4
+E234 return to map 1
+E237 enable interrupts
+E238 counter = 0
+E23B write
+head E23E
+|Switch to map 2 and faults 2141/2143 on prolonged knock [assumed from context].
+|While $8051.7 is set (knock at the retard limit [assumed], set by the interrupt), counter
+|$807C increases once every 2 calls (40 ms):
+|  above C7AF = 137 (≈5.5 s) — map 2 ($807A.7);
+|  then above C781 = 125 (≈5 s) — $807A bits 6, 5;
+|  then above C782 = 125 — faults: cylinders on G61 ($8053 bits 7, 6) — $8051 bits
+|  3, 1 (2141), cylinders on G66 ($8053 bits 5-3) — bits 2, 0 (2143); $807A.4 — lamp.
+|Without $8051.7, bits 6-3 of $807A are cleared.
+E23E X = $8000
+E241 $807A
+E243 knock at limit ($8051.7)?
+E246 yes
+E248 no — clear bits 6-3
+E24A reset counter
+E24C toggle bit 3 (divide by 2)
+E24E write
+E250 counter
+E252 bit 3 = 1?
+E254 yes — do not count
+E256 + 1
+E257 no overflow
+E259 255
+E25A write
+E25C map 2 already active?
+E25E no
+E260 bits 6, 5 already set?
+E262 no
+E264 above 125?
+E267 no — wait
+E269 cylinders on G61 ($8053 bits 7, 6)?
+E26C no
+E26E fault 2141
+E271 lamp ($807A.4)
+E273 cylinders on G66 ($8053 bits 5-3)?
+E276 no
+E278 fault 2143
+E27B lamp
+E27D write
+E27F above 125?
+E282 no — wait
+E284 bits 6, 5
+E286 reset counter
+E288 above 137?
+E28B no — wait
+E28D map 2
+E28F counter = 0
+E291 write $807A
+
+# ======================================================================
+# IRQ1 — events from chip $0100 (CBB1-D0E2)
+# ======================================================================
+label CBB1 IRQ1
+head CBB1
+|IRQ1 — INTERRUPT FROM CHIP $0100. Chip register $1E shows which events arrived
+|(masked with $8005). Writing a bit back to $1E clears the event.
+|  bit 7 — cylinder event (every 144° of crankshaft): synchronisation, spark (CC83);
+|  bit 6 — knock window: opening/closing, measurement (CBDB);
+|  bit 2 — coil dwell start point (CC74);
+|  bit 5 — tick (≈10 ms) -> D0E3 and the task dispatcher.
+|  bit 1 (inside the cylinder event) — G4 reference mark.
+CBB1 X -> chip
+CBB4 event register $1E
+CBB6 select
+CBB8 events
+CBBA enabled ones only ($8005)
+CBBD cylinder event (bit 7)?
+CBBE no
+CBC0 yes — cylinder
+CBC3 knock window?
+CBC5 yes
+CBC7 coil dwell?
+CBC9 no
+CBCB yes
+CBCE tick?
+CBD0 yes
+CBD2 nothing — exit
+CBD3 clear tick event
+CBD5 write
+CBD7 allow nested interrupts
+CBD8 tick handling
+head CBDB
+|KNOCK WINDOW. Two passes: opening the window ($80B5.7 = 1) and closing it.
+|Closing: PORT6.0 = 0, window end = start + $80B8, PORT6.3 = 0 (tachometer pulse,
+|pin 7 [assumed]). Opening: start ADC channel 6 (integrator), measurement = $80EC - result
+|-> cylinder record +2, new measurement (+0 bit 7), gain of the next cylinder into
+|latch $0800 (bit 4 — sensor G66, from table C910). With command $1B the tester can
+|set its own latch value ($8205).
+CBDB clear event
+CBDD write
+CBDF window phase
+CBE2 window open?
+CBE4 no — open it
+CBE6 PORT6.0 = 0 (stop integrator [assumed])
+CBE9 phase: closed
+CBEB write
+CBEE register $00 — time of the next window event
+CBF0 window start
+CBF3 + window length
+CBF6 write
+CBF8 cylinder
+CBFB remember whose measurement it is
+CBFE PORT6.3 = 0: tachometer (pin 7) [assumed]
+CC01 exit
+CC02 ADC channel 6
+CC05 start
+CC08 ADC taken by the interrupt (task 0 will repeat its own conversion)
+CC0B measured cylinder
+CC0E × 8
+CC0F (same)
+CC10 (same)
+CC11 cylinder records
+CC14 X -> record
+CC15 new gain
+CC17 became current
+CC19 new measurement ready
+CC1C save X
+CC1D X -> chip
+CC20 register $00
+CC22 window start $80B7
+CC25 remember
+CC28 write
+CC2A ADC result register
+CC2C select
+CC2E reference (measured at cylinder start)
+CC31 - result = measurement
+CC34 PORT6.0 = 1
+CC37 not below zero
+CC39 0
+CC3A restore X
+CC3B +2 = measurement
+CC3D phase: open
+CC3F set
+CC42 write
+CC45 cylinder
+CC48 next
+CC49 5?
+CC4B no
+CC4D 0
+CC4E × 8
+CC4F (same)
+CC50 (same)
+CC51 records
+CC54 X -> record of next cylinder
+CC55 its gain
+CC57 tester mode $1B?
+CC5A check
+CC5C no
+CC5E value from tester
+CC61 clear bit 4
+CC63 sensor table C910
+CC66 cylinder
+CC69 X -> value
+CC6A sensor
+CC6C G61 — bit 4 = 0
+CC6E G66 — bit 4 = 1
+CC70 amplifier latch $0800
+CC73 exit
+head CC74
+|Coil dwell start: register $03 = $8024 + $8056 (correction for the difference in
+|retard between adjacent cylinders, so that the dwell time stays the same).
+CC74 clear event
+CC76 write
+CC78 register $03
+CC7A dwell start
+CC7D + correction
+CC80 write
+CC82 exit
+head CC83
+|CYLINDER EVENT. Before synchronisation — search: G4 mark with Hall signal low
+|(PORT6.1 = 0) means the first cylinder is on its compression stroke, synchronisation achieved.
+|11 events without a mark — G4 fault (2112). 4 marks with Hall signal high — Hall
+|sender fault (2113). After synchronisation — CD9C.
+CC83 clear event
+CC85 write
+CC87 port 6 (Hall — bit 1)
+CC89 synchronised?
+CC8B check
+CC8E no
+CC90 yes
+CC93 PORT6.0 = 1
+CC96 G4 mark?
+CC98 check
+CC9A yes
+CC9C engine speed
+CC9F zero?
+CCA1 yes — exit
+CCA3 events without mark + 1
+CCA6 value
+CCA9 11?
+CCAB no — exit
+CCAD G4 fault (2112)
+CCAF set
+CCB2 write
+CCB5 exit
+CCB6 clear mark
+CCB8 cylinder counter = 0
+CCBB engine speed
+CCBE zero?
+CCC0 yes — exit
+CCC2 Hall high?
+CCC4 no — synchronisation
+CCC6 marks with Hall high + 1
+CCC9 value
+CCCC 4?
+CCCE no — exit
+CCD0 Hall sender fault (2113)
+CCD2 set
+CCD5 write
+CCD8 exit
+CCD9 SYNCHRONISED ($8095.5)
+CCDB set
+CCDE write
+CCE1 clear synchronisation suspicions
+CCE3 clear
+CCE6 write
+CCE9 PORT6.6 = 1: switch on fuel pump relay J17
+CCEC 0
+CCED cylinder 0
+CCF0 Hall counter 0
+CCF3 leave actuator test
+CCF6 chip: register $1C = $27 (per-cylinder mode)
+CCF9 write
+CCFB register $1D = $E4 (event mask)
+CCFE same mask in own copy
+CD01 write
+CD03 register $06 = $32 [?]
+CD06 write
+CD08 ADC channel 6
+CD0B start
+CD0D register $00
+CD0F window start
+CD12 remember
+CD15 write
+CD17 window open
+CD19 set
+CD1C write
+CD1F cylinder
+CD22 × 8
+CD23 (same)
+CD24 (same)
+CD25 records
+CD28 X -> record
+CD29 gain
+CD2B clear bit 4
+CD2D sensor table
+CD30 cylinder
+CD33 X -> value
+CD34 sensor
+CD36 G61
+CD38 G66
+CD3A amplifier latch
+CD3D ADC result register
+CD3F select
+CD42 result
+CD45 measurement reference
+head CD48
+|Count of starts without new faults (once per switch-on, at synchronisation).
+|50 starts ($32) without changes in fault memory — automatic erase
+|($8092.1). If the memory was restored from internal RAM, counting is done
+|in the copy ($44) with checksum correction ($40).
+CD48 threshold 50
+CD4A X = $8000
+CD4D internal RAM enabled?
+CD50 no
+CD52 mark $8003.2
+CD55 memory restored ($8003.3)?
+CD58 yes — count in the copy
+CD5A clear "codes shown"
+CD5D starts + 1
+CD60 value
+CD63 below 50?
+CD64 yes
+CD66 50 — erase
+CD68 enable internal RAM
+CD6B "codes shown" in the copy?
+CD6E no
+CD70 clear
+CD73 checksum
+CD75 - $80
+CD77 write
+CD79 starts + 1 (in the copy)
+CD7C checksum + 1
+CD7F starts
+CD81 below 50?
+CD82 yes
+CD84 0
+CD87 checksum = 0
+CD89 codes = 0
+CD8B starts = 0
+CD8D erase request
+CD90 was RAM already enabled before?
+CD93 yes — leave it
+CD95 disable internal RAM
+CD98 clear $8003.2
+CD9B exit
+head CD9C
+|After synchronisation: cylinder counter $8096 = 0…4 (firing order), reset at
+|the G4 mark when Hall is low. During cranking: Hall low 2 times not on cylinder zero —
+|Hall sender fault (2113) and chip emergency mode ($1C = $21, without per-cylinder knock control [assumed]).
+CD9C G4 mark?
+CD9E check
+CDA0 no
+CDA2 clear mark
+CDA4 Hall high?
+CDA6 no — cylinder 0
+CDA8 cylinder
+CDAB + 1
+CDAC 5?
+CDAE no
+CDB0 0
+CDB1 $8096 = cylinder
+CDB4 cranking?
+CDB6 check
+CDB9 no
+CDBB cylinder 0?
+CDBE yes — normal
+CDC0 Hall high?
+CDC2 yes — normal
+CDC4 mismatch + 1
+CDC7 value
+CDCA 2?
+CDCC no
+CDCE Hall sender fault (2113)
+CDD0 set
+CDD3 store
+CDD6 chip: register $1C = $21 (emergency mode [assumed])
+CDD9 store
+CDDB exit
+CDDC mismatches 0
+CDDF register $14, channel 0
+CDE0 (same)
+CDE2 start pressure ADC conversion (sample at start of cylinder)
+CDE4 ADC busy with interrupt
+CDE7 stall counter = 0 (engine is turning)
+CDEA PORT6.3 = 1: tachometer [assumed]
+CDED Hall high?
+CDF0 no
+CDF2 $806E.4?
+CDF5 check
+CDF7 no
+CDF9 enable IRQ2 [?]
+head CDFC
+|Smooth change of ignition timing. $8023 — timing actually output; $8022 — target.
+|Retard — immediately, up to 3 units (C6DA) per cylinder; advance — by 1 unit (C6D9) once every
+|$808B + 1 cylinders. During jerk damping — retard $8080 = $808A, limit $808E.
+CDFC jerk damping mode started?
+CDFF check
+CE01 no
+CE03 retard
+CE06 $8080
+CE09 0
+CE0A step counter
+CE0D clear "started"
+CE0F timing
+CE12 + retard
+CE15 later than limit?
+CE18 no
+CE1A limit
+CE1D store
+CE20 earlier than 45?
+CE23 no
+CE25 clear $8088.3: damping finished
+CE27 limit back to 45
+CE2A store
+CE2D 0
+CE2E retard = 0
+CE31 store $8088
+CE34 output timing
+CE37 copy
+CE38 - target
+CE3B equal?
+CE3D step = 0
+CE40 continue
+CE42 target is later — retard quickly
+CE44 step counter
+CE47 reached?
+CE4A yes
+CE4C + 1
+CE4D store
+CE50 continue
+CE52 0
+CE53 store
+CE56 advance by 1
+CE59 overshot?
+CE5B not earlier than target?
+CE5E yes
+CE60 target
+CE63 continue
+CE65 retard by 3
+CE68 overshot?
+CE6A not later than target?
+CE6D yes — target
+CE6F store output timing
+CE72 + damping retard
+CE75 later than limit?
+CE78 no
+CE7A limit
+CE7D patch: + retard on sudden throttle opening
+CE80 ADC result register
+CE82 select
+CE84 pressure at start of cylinder
+CE86 $8019 = pressure
+CE89 register $14
+CE8B channel 6
+CE8D start knock ADC conversion
+CE8F cylinder
+head CE92
+|PER-CYLINDER KNOCK CONTROL RETARD. $802F+N — retard of cylinder N (0…6 units,
+|6 units ≈ 8°). For each cylinder: +5 — hold after knock ($804F, table C230
+|by rpm, in events), +10 — decay timer ($804E, C240), +15 — time with retard
+|above the "floor" (for E29F), +20 — "floor" (learned minimum retard, 0…4).
+|Knock: retard + 2 (C6DB), not more than 6. No knock: after the hold, retard steps down by 1
+|to the "floor" every $804E events.
+|Sensor faulty under load with a warm engine — retard 6 on all cylinders.
+|Control disabled ($8050.7 = 0) or switch to map 2 — all retards 0.
+|$8052 — cylinder mask, $8054 — knock per cylinder (bit 0 — episode in progress),
+|$8053 — cylinder with the largest retard, $802E — pause of 4 events after knock.
+CE92 mask = 0
+CE93 bit
+CE94 shift
+CE95 cylinder - 1
+CE96 repeat
+CE98 $8052 = cylinder mask (cylinder 0 — bit 7)
+CE9B knock sensor fault?
+CE9D check
+CEA0 no
+CEA2 retard 6
+CEA5 mode
+CEA8 invert
+CEAA warm and under load?
+CEAC yes — 6
+CEAE retard 0
+CEAF A = 0
+CEB0 X = 0
+CEB3 counters to zero
+CEB6 (same)
+CEB9 (same)
+CEBC (same)
+CEBF (same)
+CEC2 (same)
+CEC5 (same)
+CEC8 (same)
+CECB all retards = B
+CECE (same)
+CED1 (same)
+CED4 (same)
+CED7 (same)
+CEDA pause = 0
+CEDD keep bits 2, 1
+CEDF clear knock
+CEE2 store
+CEE5 A = 0
+CEE8 to spark
+CEEB flags
+CEEE switch to map 2 ($8051.5)?
+CEF0 no
+CEF2 already zeroed?
+CEF4 yes
+CEF6 mark
+CEF8 store
+CEFB all retards 0
+CEFD mode
+CF00 control disabled — all 0
+CF02 voltage normal?
+CF04 yes
+CF06 no: do not change retard
+CF09 cylinder
+CF0C X -> retard
+CF0D mask
+CF10 to spark
+label CF13 KNOCK_PTR
+head CF13
+|KNOCK_PTR — X -> retard of the cylinder given by mask B (bit 7 — cylinder 0).
+CF13 retards
+CF16 this bit?
+CF18 yes
+CF1A next cylinder
+CF1B next bit
+CF1C repeat
+CF1E return
+CF1F knock per cylinder
+CF22 knock in this cylinder?
+CF25 yes
+CF27 episode in progress?
+CF29 yes
+CF2B no — change nothing
+CF2E mask
+CF31 invert
+CF32 clear cylinder from $8055
+CF35 store
+CF38 pause after knock
+CF3B zero
+CF3D - 1
+CF3E store
+CF40 knock in this cylinder?
+CF43 no
+CF45 mask
+CF48 other cylinders
+CF49 only bits 7-3
+CF4B $8055 [?] (correction C7AB = 0)
+CF4E episode in progress?
+CF50 check
+CF53 yes
+CF55 start episode
+CF58 store
+CF5B this cylinder
+CF5E $8053 = first knocking cylinder
+CF61 pause 4 events
+CF63 store
+CF66 retards
+CF69 cylinder
+CF6C X -> retard
+CF6D mask
+CF70 knock?
+CF73 yes — increase retard
+CF75 hold
+CF77 running — wait
+CF79 retard
+CF7B zero
+CF7D decay timer
+CF7F running — wait
+CF81 above the "floor"?
+CF83 no — to the "floor"
+CF85 - 1
+CF88 continue
+CF8A "floor"
+CF8C continue
+CF8E not below zero
+CF90 0
+CF91 store retard
+CF93 decay timer ($804E)
+CF96 store
+CF98 continue
+CF9A timer - 1
+CF9C retards of all cylinders
+CF9F (same)
+CFA2 (same)
+CFA5 (same)
+CFA8 (same)
+CFAB present — episode in progress
+CFAD $8055
+CFB0 present
+CFB2 episode finished
+CFB3 $8053 = 0
+CFB6 clear bit 0
+CFB8 clear
+CFBB store
+CFBE retards
+CFC1 cylinder
+CFC4 X -> retard
+CFC5 0
+CFC6 time above "floor" = 0
+CFC8 to spark
+CFCA hold - 1
+CFCC continue
+CFCE retard
+CFD0 + 2
+CFD3 save
+CFD4 map 2 because of knock?
+CFD6 check
+CFD9 yes
+CFDB retard
+CFDC more than 6?
+CFDE no
+CFE0 6
+CFE2 continue
+CFE4 retard
+CFE5 more than C6DD = 6?
+CFE8 no
+CFEA 6
+CFED store retard
+CFEF hold ($804F)
+CFF2 store
+CFF4 retard
+CFF6 - "floor"
+CFF8 below the "floor"
+CFFA less than 2 above?
+CFFC no
+CFFE yes — time above "floor" = 0
+D000 save X
+D001 cylinder with the largest retard
+D004 X -> its retard
+D007 its retard
+D009 restore X
+D00A larger than ours?
+D00C no — ours is the largest
+D00E - C7AC = 8
+D011 below zero (always when retard ≤ 6)
+D013 larger than ours?
+D015 no
+D017 pull up
+D019 continue
+D01B $8053 = this cylinder
+D01E retard
+D020 in $8055?
+D023 no
+D025 + C7AB = 0
+D028 map 2?
+D02A check
+D02D yes
+D02F more than 6?
+D031 no
+D033 6
+D035 continue
+D037 more than 6?
+D03A no
+D03C 6
+D03F retard of next cylinder
+D041 last cylinder?
+D044 no
+D046 next is the first
+D049 retard difference
+D04A $8056 — dwell start correction
+D04D + timing
+D050 below zero?
+D051 yes — minimum
+D053 later than 45?
+D056 no
+D058 jerk damping?
+D05A check
+D05D yes — no limit
+D05F 45
+D062 continue
+D064 earlier than 5?
+D067 no
+D069 5
+D06C - delay correction ($8021)
+D06F above zero?
+D071 1
+D073 register $02 — spark moment
+D075 store
+D078 retards
+D07B flags
+D07E cylinder with the largest retard
+D081 none — clear "at limit"
+D083 X -> its retard
+D086 "at limit"
+D088 map 2?
+D08A check
+D08D yes — limit 6
+D08F patch: limit 4 or 6 depending on rpm
+table D092 1 dead byte (left under the patch)
+D093 limit 6
+D096 retard not below limit?
+D098 yes — "at limit"
+D09A clear "at limit"
+D09C 0
+D09D counter $807C = 0
+D0A0 store $8051
+D0A3 flags
+D0A6 largest retard
+D0A8 less than 6?
+D0AB no
+D0AD clear current faults 2141/2143
+D0AF store
+D0B2 ADC result register
+D0B4 select
+D0B7 result
+D0BA $80EC — reference for knock measurement
+D0BD snapshot already taken ($8051.6)?
+D0BF yes — exit
+D0C1 G42
+D0C4 $806C = G42 snapshot
+D0C7 pressure
+D0CA not above 141?
+D0CC yes — exit
+D0CE G42 below 165 (warm intake air) [assumed]?
+D0D0 no
+D0D2 $8066.4 [?]
+D0D4 set
+D0D7 store
+D0DA snapshot taken
+D0DC set
+D0DF store
+D0E2 exit
+head F920
+|Patch for D08F: on map 1 "at limit" means retard ≥ 4 at engine speeds from 70 units
+|(≈1550 rpm), otherwise ≥ 6. This way the switch to map 2 happens earlier.
+F920 rpm
+F923 70 or higher?
+F925 4
+F927 yes
+F929 6
+F92B back
+head E293
+|Knock retard "floor" ($8043+N), task 1. $804D counts 0…50 (≈1 s).
+|$803E+N — time (20 ms calls) while the cylinder's retard is 2 or more above the "floor"
+|(reset by the interrupt, CFFE). Reaching 254 (≈5 s) — "floor" + 2 (up to 2 on map 1,
+|up to 4 on map 2). Otherwise once every ≈10 s "floor" - 2. This way the ECU remembers a cylinder
+|that knocks constantly.
+E293 second counter
+E296 + 1
+E297 51?
+E299 no
+E29B 0
+E29C store
+E29F cylinder 0
+E2A2 time above "floor" + 1
+E2A4 no overflow
+E2A6 stay at 255
+E2A8 time
+E2AA "floor" zero?
+E2AC no
+E2AE yes — "floor" decay timer = 0
+E2B0 less than C780 = 254?
+E2B3 yes — "floor" decay
+E2B5 "floor"
+E2B7 map 2?
+E2B9 check
+E2BC no
+E2BE not less than 4?
+E2C0 yes — do not grow
+E2C2 + 2
+E2C4 0
+E2C5 decay timer = 0
+E2C7 time = 0
+E2C9 store "floor"
+E2CB less than 2?
+E2CD yes — + 2
+E2CF do not grow
+E2D1 second counter
+E2D4 reached 50?
+E2D6 no
+E2D8 decay timer + 1 (once per second)
+E2DA timer
+E2DC less than 10?
+E2DE yes — wait
+E2E0 0
+E2E1 timer = 0
+E2E3 "floor"
+E2E5 zero — nothing
+E2E7 - 2
+E2E9 not below zero
+E2EB 0
+E2EC store "floor"
+E2EE next cylinder
+E2EF all 5?
+E2F2 no
+head E2F4
+|$808C — engine running time (task 1 calls of 20 ms) while rpm ≥ 16 units;
+|stops at 65535; below 16 units — zero.
+E2F4 0
+E2F7 rpm
+E2FA below 16?
+E2FC yes — reset
+E2FE time
+E301 + 1
+E302 overflowed — do not store
+E304 store
+E307 end of task — back to dispatcher
+
+# ======================================================================
+# Tick (D0E3-D17C) and task dispatcher (D17D-D1E4)
+# ======================================================================
+head D0E3
+|TICK (≈10 ms), from IRQ1 with interrupts enabled.
+|Engine stop: after synchronisation $8025 grows every tick, a cylinder event
+|resets it. 100 ticks (C78D, ≈1 s) without events means the engine has stopped:
+|$8003.7; with PORT5.5 = 1 [?] the fault memory is copied to internal RAM with a checksum,
+|and the program restarts (CA8E) without a full RAM check.
+|Before synchronisation: with PORT5.5 = 1 and $8003.3 (copy awaits restore), if
+|internal RAM power was not lost (RP5CR.7) and the checksum is correct, codes and counters
+|are restored from the copy; otherwise a full restart (CA88).
+D0E3 synchronised?
+D0E5 check
+D0E8 no
+D0EA ticks without events + 1
+D0ED value
+D0F0 below 100?
+D0F3 yes - to the tasks
+D0F5 disable interrupts
+D0F6 engine stopped ($8003.7)
+D0F8 set
+D0FB store
+D0FE PORT5.5 [?]
+D101 0 - no copy
+D103 enable internal RAM
+D106 checksum = 0
+D107 code byte 1
+D10A add to checksum
+D10B copy
+D10D code byte 2
+D110 add to checksum
+D111 copy
+D113 code byte 3
+D116 add to checksum
+D117 copy
+D119 starts without change
+D11C add to checksum
+D11D copy
+D11F $802C
+D122 add to checksum
+D123 copy
+D125 checksum
+D127 reset stack
+D12A X = $8005
+D12D restart the program (without RAM check)
+D130 PORT5.5 [?]
+D133 0 - to the tasks
+D135 flags
+D138 copy awaits restore?
+D13A no - to the tasks
+D13C internal RAM power not lost?
+D13F lost - full restart
+D141 disable interrupts
+D142 enable internal RAM
+D145 copy
+D148 checksum = 0
+D149 + byte
+D14B next
+D14C up to $45
+D14F repeat
+D151 checksum correct?
+D153 no - full restart
+D155 restore codes
+D157 (same)
+D15A (same)
+D15C (same)
+D15F (same)
+D161 (same)
+D164 starts
+D166 (same)
+D169 $802C
+D16B (same)
+D16E disable internal RAM
+D171 enable interrupts
+D172 copy restored
+D174 store
+D177 to the tasks
+D179 disable interrupts
+D17A full restart
+head D17D
+|TASK DISPATCHER (preemptive). Counters $8006-$8009, one per task,
+|dividers D1E1 = 1 2 4 10. Each tick the counter + 1; when it reaches the divider the task
+|is ready (bit 6). The first ready task in order is started (bit 7 = running),
+|if no running task precedes it: task 0 preempts 1-3, task 1 preempts 2-3, and so on.
+|A task ends by jumping to D1D1: clear "running", search for the next one.
+D17D dividers
+D180 push
+D181 task 0 counter
+D184 + 1
+D186 value
+D188 save X
+D18B dividers
+D18C divider
+D18E next
+D18F save
+D190 counter
+D193 count (without bits 7, 6)
+D195 reached the divider?
+D196 no
+D198 counter
+D19A + ready
+D19C - divider (count from zero)
+D19D store
+D19F next counter
+D1A0 all four?
+D1A3 no
+D1A5 drop pointer
+D1A6 task number 0
+D1A7 task 0 counter
+D1AA counter
+D1AC running? - exit (a more important task is busy)
+D1AE ready?
+D1B0 yes - start it
+D1B2 number + 1
+D1B3 next
+D1B4 all?
+D1B7 no
+D1B9 return from interrupt
+D1BA running
+D1BC clear "ready"
+D1BE store
+D1C0 task table D1C9
+D1C3 number × 2
+D1C4 X -> address
+D1C5 task address
+D1C7 jump to the task
+table D1C9 8 task addresses: D220 (0), DD18 (1), E30A (2), EA2C (3)
+D1D1 counters
+D1D4 counter
+D1D6 running? - this one has finished
+D1D8 next
+D1D9 search
+D1DB clear "running"
+D1DD store
+D1DF search for the next ready task
+table D1E1 4 task dividers: 1 2 4 10 ticks
+
+# ======================================================================
+# TASK 2 (every 4 ticks = 40 ms): lambda, mixture N7 (E30A-E790)
+# ======================================================================
+head E30A
+|TASK 2 - every 4 ticks (≈40 ms).
+|Start state (once, $8060.2): G62 < 127 means a warm start ($8060.3);
+|104 ≤ G62 < 127 also sets $8060.0 (semi-warm) [assumed].
+|$8066.1 - signal G39 ≥ 239 (open circuit in the sensor wire [assumed]).
+|N7 = 50 % constantly: test 4441; tester command $11 ($8077.5);
+|contact 5 closed longer than 2.5 s with the engine running (CO adjustment [assumed]).
+E30A X = $8000
+E30D lambda flags
+E30F start state already stored?
+E311 yes
+E313 stored
+E315 G62
+E317 127 and above (cold)?
+E319 yes
+E31B warm start
+E31D below 104?
+E31F yes
+E321 semi-warm
+E323 store $8060
+E325 clear "sensor open circuit"
+E328 G39
+E32A 239 and above?
+E32C no
+E32E sensor open circuit ($8066.1)
+E331 tester command $11?
+E334 yes - 50 %
+E336 engine was turning?
+E339 yes - check contact 5
+E33B test: N7 step?
+E33E no - normal operation
+E340 N7 = 50 %
+E342 output
+E345 $8003.1 [?]
+E348 set - normal operation
+E34A blink code list finished?
+E34D yes - normal operation
+E34F contact 5 closed time
+E351 below 25 (2.5 s)?
+E353 yes - normal operation
+E355 contact 5 still closed?
+E358 yes - 50 %
+E35A patch: limit of lambda steps ($8214)
+E35D 16 points
+E35F rpm axis C210
+E362 find the point
+E365 temporarily
+E368 table C2F0 = 23 21 19 18 17 17 12 8 5 …
+E36B X -> value
+E36C N7 addition after pressure rise
+E36E $805B
+E371 enrichment after pressure rise ($8077.6)?
+E373 check
+E376 no
+E378 yes - without lambda
+E37B 0
+E37C coding: PORT5.4 = 1 means BUND
+E37F BUND - 0
+E381 CAL - $80
+E383 $8058 = market (for lambda tables)
+E386 N7 = 0 %
+E387 synchronised?
+E389 check
+E38C no - N7 0 %
+E38E time since synchronisation ($80AF/$80B0, calls of 40 ms)
+E391 + 1
+E392 overflowed
+E394 store
+E397 sensor open circuit?
+E39A check
+E39C yes - without lambda
+head E3A1
+|SENSOR READINESS. The sensor is "alive" if the signal leaves the band 32…58
+|(C6B8 / C6B7): ≥ 58 means rich ($8066.3 = 1, $8060.7 = 1), < 32 means lean.
+|15 calls outside the band (C6BC, 0.6 s) and the sensor is ready: $8060.4 and $8066.2.
+|In closed loop ($8060.6), 50 calls (2 s, C6BA/C6BB) inside the band mean
+|the sensor has "gone silent": clear $8060.6 and $8060.4 (open loop).
+E3A1 counter
+E3A4 push
+E3A5 X = $8000
+E3A8 G39
+E3AB 58 and above?
+E3AE yes - rich
+E3B0 32 and above?
+E3B3 yes - inside the band
+E3B5 lean: $8066.3 = 0
+E3B8 closed loop?
+E3BA check
+E3BD yes - leave the counter alone
+E3BF side: lean
+E3C1 clear
+E3C4 store
+E3C7 count
+E3C9 rich: $8066.3 = 1
+E3CC closed loop?
+E3CE check
+E3D1 yes
+E3D3 side: rich
+E3D5 set
+E3D8 store
+E3DB counter
+E3DC + 1
+E3DD below 15?
+E3E0 yes
+E3E2 sensor ready ($8060.4)
+E3E4 set
+E3E7 store
+E3EA first step after readiness ($8066.2)
+E3ED counter = 0
+E3EF clear
+E3F0 continue
+E3F2 closed loop?
+E3F4 check
+E3F7 no - do not count
+E3F9 counter
+E3FA + 1
+E3FB was it rich?
+E3FD check
+E400 yes
+E402 C6BB = 50
+E405 continue
+E407 C6BA = 50
+E40A reached?
+E40B no
+E40D sensor went silent: clear $8060.6 and .4
+E40F clear
+E412 store
+E415 counter = 0
+E416 store
+head E419
+|FAULT 2342 (lambda control). Part throttle, throttle not closed,
+|signal G39 near the middle 40 ± 6 for 125 consecutive calls (5 s): the sensor is "stuck":
+|clear readiness; if ≥ 7500 calls (300 s) have passed since synchronisation
+|and the engine is hot (G62 ≤ 30, ≈80 °C), fault 2342 ($8060.1).
+|Per SSP: implausible G39 for more than 5 s on a warm engine.
+E419 F81 faulty?
+E41B check
+E41E yes - do not check F81
+E420 digital inputs
+E423 full load (F81)?
+E425 yes - counter to zero
+E427 throttle closed?
+E42A yes - counter to zero
+E42C G39 - 40
+E42E positive
+E430 absolute value
+E431 further than 6 from the middle?
+E434 yes - sensor is working, counter to zero
+E436 "stuck" counter
+E439 + 1
+E43A below 125 (5 s)?
+E43C yes - store
+E43E flags
+E441 clear readiness and closed loop
+E443 time since synchronisation
+E446 below 7500 (300 s)?
+E449 yes - no fault
+E44B G62
+E44E colder than 30?
+E450 yes - no fault
+E452 fault 2342
+E454 store
+E457 counter = 0
+E458 store
+head E45B
+|N7 in special modes: start (rpm < 16 units) - 80 % with G62 > 189
+|(colder than ≈ −4 °C [assumed]), otherwise 50 %; fuel cut-off (J142, $8077.0)
+|with the pump running and not during start - 40 %.
+E45B rpm flags
+E45E start (below 16 units)?
+E460 no
+E462 80 % (C6B3)
+E465 G62
+E468 colder than 189?
+E46B yes - 80 %
+E46D 50 % (C6B4)
+E470 output
+E473 bit 5 (rpm below 24 units)?
+E475 yes - normal calculation
+E477 port 6
+E479 pump on?
+E47B no - normal calculation
+E47D cut-off?
+E47F check
+E482 no
+E484 N65 cut-off: N7 = 40 % (C6B5)
+E487 output
+head E48A
+|BASE MAP N7 16×16, in %: rows are pressure (axis C500 = 255 173 169 … 38 0),
+|columns are rpm (axis C510). Full load (F81) is the top row, idle is
+|the bottom row. Map C300 is normal, C400 is used with a sensor open circuit ($8066.1).
+|$8010 - altitude factor C550 = 255 229 204 191 by atmospheric pressure.
+|$8011 - coolant temperature correction (128 = no correction): C540 (cold start),
+|C520 (warm start), C530 (warm start and sensor open circuit); axis is the first 8 bytes, values the next 8.
+E48A pressure axis C500
+E48D 16 points
+E48F F81 faulty?
+E491 check
+E494 yes
+E496 digital inputs
+E499 full load?
+E49B no
+E49D top row
+E49F continue
+E4A1 throttle closed?
+E4A4 no - by pressure
+E4A6 bottom row
+E4A7 row
+E4AA continue
+E4AC row by pressure
+E4AF rpm axis C510
+E4B2 16 points
+E4B4 column
+E4B7 map C300
+E4BA save
+E4BB sensor open circuit?
+E4BD check
+E4C0 no
+E4C2 map C400
+E4C5 restore
+E4C6 N7 from the map
+E4C9 $8057 = base N7
+E4CC altitude axis C2B0
+E4CF 4 points
+E4D1 atmospheric pressure
+E4D4 find the interval
+E4D7 index
+E4D8 fraction
+E4DB A = fraction
+E4DC B = index
+E4DD table C550
+E4E0 X -> value
+E4E1 B = fraction
+E4E2 interpolation
+E4E5 $8010 = altitude factor
+E4E8 base N7
+E4EB enrichment after pressure rise?
+E4ED check
+E4F0 no
+E4F2 + rpm-dependent addition
+E4F5 above 100 %?
+E4F7 no
+E4F9 100 %
+E4FB $8057
+E4FE X = $8000
+E501 table C520 (warm start)
+E504 warm start?
+E507 no - C540
+E509 sensor open circuit?
+E50C no - C520
+E50E C530
+E511 continue
+E513 C540 (cold start)
+E516 $8011 = table address
+E518 X = table
+E519 G62
+E51C 8 points
+E51E find the interval
+E521 index
+E522 fraction
+E525 A = fraction
+E526 B = index
+E527 table
+E52A values after the axis (+8)
+E52C X -> value
+E52D B = fraction
+E52E interpolation
+E531 $8011 = temperature correction
+E534 rpm below 24 units ($8029.5)?
+E536 check
+E539 yes - open loop
+E53B pump on?
+E53E no - open loop
+E540 F81 faulty?
+E542 check
+E545 yes - by pressure
+E547 digital inputs
+E54A full load?
+E54C yes - full load
+E54E pressure above curve C2E0 ($8028.4)?
+E550 check
+E553 no - part load
+head E555
+|FULL LOAD (F81 or pressure above curve C2E0): open loop.
+|On a cold start N7 is at least ($8011 - 68). With a knock sensor fault or
+|prolonged knock ($807A.5), another + 5 % (C556, patch F750). Integrator = middle.
+E555 base N7
+E558 warm start?
+E55A check
+E55D yes
+E55F temperature correction
+E562 - 68
+E564 base smaller?
+E565 yes - take the correction
+E567 base
+E56A A = N7
+E56B mask
+E56D patch: enrichment on knock
+E570 knock sensors OK? yes - no addition
+E572 + 5 % (C556)
+E575 no overflow
+E577 100 %
+E579 lambda integrator = middle ($5F00)
+E57C store
+E57F output (fraction = B = $A0 from patch F750: +0.6 % to the table, verified with the emulator)
+E582 sensor open circuit?
+E585 check
+E587 yes - open loop
+E589 closed loop?
+E58C check
+E58E yes
+head E590
+|OPEN LOOP (warm-up, sensor open circuit, sensor not ready): integrator =
+|middle; N7 = base + temperature correction. On a cold start, in addition to the correction,
+|a share of the altitude factor is added (higher in the mountains means less).
+|Closed loop is enabled ($8060.6, clears the current 2342) when G62 is below
+|C547 = 63 (C527 = 95 on a warm start), there is no open circuit and the sensor is ready.
+E590 middle
+E593 integrator
+E596 base
+E599 correction
+E59C - 128
+E59E above zero - enrich
+E5A0 lean out: absolute value
+E5A1 base - correction
+E5A2 not below zero
+E5A4 0
+E5A5 continue
+E5A7 save
+E5A8 warm start?
+E5AA check
+E5AD no
+E5AF base
+E5B0 + correction
+E5B2 base
+E5B3 push correction
+E5B4 altitude factor
+E5B7 × correction
+E5B8 X = product
+E5B9 correction
+E5BA + correction
+E5BB D
+E5BC B = high byte: correction × (altitude + 1) / 256
+E5BD base
+E5C0 + correction
+E5C1 above 100 %?
+E5C3 no
+E5C5 100 %
+E5C7 $8057 = N7
+E5CA flags
+E5CD threshold C547 = 63
+E5D0 warm start?
+E5D2 no
+E5D4 C527 = 95
+E5D7 G62 below the threshold (warmer)?
+E5DA no
+E5DC sensor open circuit?
+E5DF check
+E5E1 yes
+E5E3 sensor ready?
+E5E5 no
+E5E7 closed loop
+E5E9 clear the current 2342
+E5EB store
+E5EE B = 0
+E5EF N7
+E5F2 output
+head E5F5
+|CLOSED LOOP: PI controller, integrator $8059 (16 bit, middle $5F00 = 0 %).
+|Sensor side: G39 < 48 means lean, ≥ 52 means rich, 48…51 means N7 is not recalculated.
+|A side change gives a jump (4×4 table C560 / C580 by pressure C558 and rpm
+|C55C; for HS +16, for CAL +128, tables C5E0/C600). Without a change, a step
+|(C5A0 / C5C0, for CAL C620 / C640). At idle, constants from C6A4/C6A6.
+|The first step after readiness is C6B0/C6B1 = 46. Jumps and steps are multiplied
+|by $8214 / 256 (patch FA00). Rich moves the integrator down, lean moves it up.
+|N7 = base + (integrator - middle), 5…95 %; at the limits the integrator is pulled back.
+E5F5 enrichment after pressure rise?
+E5F7 check
+E5FA yes - leave the integrator alone
+E5FC throttle closed?
+E5FF yes
+E601 X = $8000
+E604 first step after readiness?
+E607 no
+E609 clear
+E60C continue
+E60E integrator
+E611 to the N7 calculation
+E614 save
+E615 pressure axis C558
+E618 4 points
+E61A row
+E61D rpm axis C55C
+E620 4 points
+E622 cell 4×4
+E625 $805F
+E628 restore
+E629 G39
+E62C + 2
+E62E below 50 (G39 < 48)?
+E631 yes - lean
+E633 - 4
+E635 not below 50 (G39 ≥ 52)?
+E638 yes - rich
+E63A in the middle - leave N7 alone
+E63D old side
+E63E new: lean
+E640 continue
+E642 old side
+E643 new: rich
+E645 compare with the old one
+E647 store the side
+E64A side changed?
+E64B yes - jump
+E64D first step after readiness?
+E64F check
+E652 no
+E654 C6B0
+E657 rich?
+E659 check
+E65C yes
+E65E C6B1
+E661 continue
+E663 idle step C6A6
+E666 side
+E669 rich
+E66B lean: +2
+E66C (same)
+E66D HS?
+E670 no
+E672 +1
+E673 market
+E676 BUND
+E678 CAL: +6
+E67A (same)
+E67B step
+E67D throttle closed?
+E680 yes - this step
+E682 step table C5A0 (rich)
+E685 side
+E688 rich
+E68A C5C0 (lean)
+E68D market (0 / $80)
+E690 HS?
+E693 no
+E695 +16
+E697 X -> table
+E698 cell
+E69B patch: step × $8214
+E69E step
+E69F high byte 0 (small step)
+E6A0 continue
+E6A2 X = $8000
+E6A5 clear "first step"
+E6A8 idle jump C6A4
+E6AB market
+E6AE BUND
+E6B0 CAL: +6
+E6B2 (same)
+E6B3 HS?
+E6B6 no
+E6B8 +1
+E6B9 jump
+E6BB throttle closed?
+E6BE jump in A
+E6BF yes - this one
+E6C1 jump table C560 (rich)
+E6C4 side
+E6C7 rich
+E6C9 C580 (lean)
+E6CC market
+E6CF HS?
+E6D2 no
+E6D4 +16
+E6D6 X -> table
+E6D7 cell
+E6DA patch: jump × $8214
+E6DD low byte 0 (large step in percent)
+E6DE $8010 = step
+E6E1 side
+E6E4 rich?
+E6E5 integrator
+E6E8 lean
+E6EA rich - down
+E6ED not below 0
+E6EF 0
+E6F0 (same)
+E6F1 continue
+E6F3 lean - up
+E6F6 above $BE00?
+E6F8 no
+E6FA limit
+E6FD $8059 = integrator
+E700 - middle
+E703 up - add
+E705 down - absolute value
+E706 (same)
+E708 (same)
+E709 (same)
+E70A correction
+E70D (same)
+E70E base
+E711 - correction
+E714 not below zero
+E716 0
+E717 (same)
+E718 not below 5 %?
+E71A yes
+E71C pull back the integrator: 100 - base
+E71E (same)
+E721 (same)
+E722 store
+E725 N7 = 0 (becomes 5 %)
+E726 output
+E728 base + correction
+E72B below 95 %?
+E72D yes
+E72F pull back the integrator: 190 - base
+E731 (same)
+E734 (same)
+E735 store
+E738 95 %
+head E73A
+|N7 output: + addition from jerk damping ($8089), limits 5…95 %, converted to timer clocks.
+E73A + addition
+E73D no overflow
+E73F 100
+E741 above 95 %?
+E743 no
+E745 95 %
+E747 continue
+E749 below 5 %?
+E74B no
+E74D 5 %
+E74F fraction = 0
+E750 temporary cell
+E753 $805D = N7 time in clocks
+E756 synchronised?
+E758 check
+E75B yes
+E75D no - to pressure
+E760 timer 2: setting TCSR3 |= $53 (PWM N75) [assumed]
+E762 disable interrupts
+E763 (same)
+E765 (same)
+E767 enable interrupts
+E768 X = $8000
+E76B G62
+E76E colder than 30 (≈80 °C)?
+E770 yes
+E772 counter
+E775 + 1
+E776 50 (2 s)?
+E778 no
+E77A 0
+E77B hot engine time, in 2 s steps ($80B1)
+E77E no overflow
+E780 hold
+E783 store
+E786 $8066.5: engine hot
+E789 $8066.4 (hot air under boost)?
+E78C no
+E78E clear $8066.5
+
+# ======================================================================
+# Task 2: BOOST CONTROL N75 (E791-E98E)
+# ======================================================================
+head E791
+|N75 - BOOST CONTROL. Duty cycle $8067 = 0…255 (0…100 %), output
+|by software PWM in the CMI interrupt on PORT2.6. Higher duty cycle means higher boost [assumed].
+|It works only if ALL of these hold: full load (F81 closed and OK), no prolonged
+|knock ($807A.5), no G71 faults, no overheating (F76 open, PORT5.7 = 1),
+|limit switch F60 OK and open. Otherwise N75 = 0 and the integrator is preset
+|from the pilot control map C700 (4×4: pressure C6F8, rpm C6FC).
+|Boost TARGET: table C718 by rpm (axis C710 = 80 119 160 200 213 223 240 255):
+|174 178 176 177 179 179 178 176 (≈1.36…1.40 bar abs. [assumed scale 128 = 1 bar]).
+|Controller: integrator $8069 (16 bit) + fast part from the error + correction
+|by the rate of pressure change ($806B).
+E791 limit switch flags
+E794 F81 faulty?
+E796 yes - switch N75 off
+E798 digital inputs
+E79B full load (F81)?
+E79D no - switch off
+E79F prolonged knock ($807A.5)?
+E7A1 check
+E7A4 yes - switch off
+E7A6 G71 faults
+E7A8 check
+E7AB present - switch off
+E7AD overheating (F76 closes the input: PORT5.7 = 0)?
+E7B0 yes - switch off
+E7B2 F60 faulty?
+E7B4 yes - switch off
+E7B6 digital inputs
+E7B9 F60 (throttle closed)?
+E7BB no - regulate
+E7BD N75 off: clear "overshoot" and "rise"
+E7C0 G42
+E7C3 165 and above (cold air)?
+E7C5 yes
+E7C7 warm air: snapshot $806C = 0
+E7C8 store
+E7CB pressure axis C6F8 = 166 154 141 115
+E7CE 4 points
+E7D0 row
+E7D3 rpm axis C6FC = 100 120 160 200
+E7D6 4 points
+E7D8 cell
+E7DB pilot control map C700
+E7DE initial integrator value
+E7E1 hot air under boost ($8066.4)?
+E7E3 check
+E7E6 yes - from the map
+E7E8 hot engine time
+E7EB 60 or more (≥ 120 s)?
+E7ED yes - from the map
+E7EF otherwise 102
+E7F1 snapshot of G42
+E7F4 146 or more (cold)?
+E7F6 yes - keep
+E7F8 - 51
+E7FA not below zero
+E7FC 0
+E7FD low byte 0
+E7FE integrator
+E801 N75 = 0
+E802 store
+E805 rpm axis C710
+E808 rpm
+E80B 8 points
+E80D find the interval
+E810 index
+E813 fraction
+E816 A = fraction
+E817 B = index
+E81A target C718
+E81D X -> value
+E81E B = fraction
+E81F boost TARGET
+E822 X = $8000
+E825 target - pressure
+E828 undershoot - continue
+E82A overshoot ($8066.6)
+E82D absolute value
+E82E continue
+E830 undershoot: $8066.6 = 0
+E833 $8010 = |error|
+E836 integrator step C730 (undershoot)
+E839 bit 6 of register B: here B holds the left node of the target table C718[i] (after INTERP), not the overshoot flag
+E83B for 174…179 bit 6 = 0, so always C730; bit 6 = 1 for values 64…127 and 192…255, then C738
+E83D C738 (not executed in the stock ROM; the tables are identical)
+E840 step by |error|: axis 12 8 4 0 -> 255 170 85 0
+E843 B = step
+E844 high byte 0 (step in the low byte)
+E845 $8011
+E848 overshoot?
+E84A check
+E84D no - up
+E84F integrator
+E852 - step
+E855 not below 0
+E857 0
+E858 (same)
+E859 continue
+E85B integrator
+E85E + step
+E861 no overflow
+E863 limit
+E866 store the integrator
+E869 fast part, undershoot: C720 (axis 40 27 13 0 -> 51 34 17 0)
+E86C overshoot?
+E86E check
+E871 no
+E873 overshoot: C728 (axis 50 33 17 0 -> 153 102 51 0)
+E876 fast part by |error|
+E879 overshoot?
+E87B check
+E87E yes - subtract
+E880 B = fast part
+E881 integrator + fast part
+E884 overflow
+E886 above 255?
+E888 no
+E88A 255
+E88C - fast part
+E88D pull back the integrator (do not accumulate beyond 100 %)
+E890 255
+E892 continue
+E894 B = fast part
+E895 integrator
+E898 - fast part
+E899 not below 0
+E89B 0
+E89C pressure rising ($8066.7)?
+E89E check
+E8A1 yes - reduce
+E8A3 falling: + $806B
+E8A6 no overflow
+E8A8 255
+E8AA continue
+E8AC rising: - $806B
+E8AF not below 0
+E8B1 0
+E8B2 integrator low byte
+E8B5 $8010 = duty cycle (16 bit)
+E8B8 rpm
+E8BB 4 points
+E8BD axis C750 = 40 120 200 255
+E8C0 find the interval
+E8C3 index
+E8C4 fraction
+E8C7 A = fraction
+E8C8 B = index
+E8C9 maximum duty cycle C754 = 217 217 217 204 (≈85 %, 80 %)
+E8CC X -> value
+E8CD B = fraction
+E8CE limit
+E8D1 $8012
+E8D4 integrator
+E8D7 duty cycle
+E8DA - limit
+E8DD not above the limit
+E8DF integrator - excess
+E8E0 not below 0
+E8E2 0
+E8E3 store the integrator
+E8E6 duty cycle
+E8E9 not above the limit?
+E8EC yes
+E8EE limit
+E8F1 low byte 0
+E8F2 store
+head E8F5
+|BOOST REDUCTION by temperatures, subtracted from the duty cycle:
+|by G42 (axis C758 = 185 175 165 137 -> C75C = 83 38 13 13; colder means more;
+|(snapshot $806C - 146) is added to G42 if the snapshot is cold)
+|plus by G62 (axis C760 = 216 … 21 -> C768 = 89 89 89 81 71 64 25 0; cold
+|engine means more), and with $8066.5 (engine hot) by hot engine time
+|(~$80B1, axis C770 -> C778 = 64 … 0). Per SSP: below +10 °C boost is reduced,
+|an open circuit in G42 (−20 °C) keeps boost low.
+|The integrator does not drop below the reduction. A remainder below 224/65536 becomes zero.
+|Limits C7A9 = 0 … C7AA = 255.
+E8F5 G42
+E8F8 snapshot of G42
+E8FB - 146
+E8FD warm - no addition
+E8FF + to G42
+E900 no overflow
+E902 255
+E904 axis C758
+E907 4 points
+E909 find the interval
+E90C index
+E90D fraction
+E910 A = fraction
+E911 B = index
+E912 table C75C
+E915 X -> value
+E916 B = fraction
+E917 reduction by air
+E91A $8012
+E91D G62
+E920 axis C760
+E923 engine hot ($8066.5)?
+E925 check
+E928 no
+E92A hot engine time
+E92D invert
+E92E axis C770
+E931 8 points
+E933 find the interval
+E936 index
+E937 fraction
+E93A A = fraction
+E93B table C768
+E93E hot?
+E940 check
+E943 no
+E945 table C778
+E948 index
+E949 X -> value
+E94A B = fraction
+E94B reduction by engine
+E94E + by air
+E951 no overflow
+E953 255
+E955 $8012 = reduction
+E958 integrator
+E95B not below the reduction?
+E95E yes
+E960 raise to the reduction
+E963 store
+E966 duty cycle
+E969 - reduction
+E96C below zero - 0
+E96E D to X
+E96F below 224/65536?
+E972 yes - 0
+E974 restore
+E975 continue
+E977 0
+E978 (same)
+E979 not above C7AA = 255?
+E97C yes
+E97E 255
+E981 continue
+E983 not below C7A9 = 0?
+E986 yes
+E988 0
+E98B low byte 0
+E98C $8067 = N75 duty cycle
+head E98F
+|Pressure rise over 40 ms ($8073, 0 when falling or on a G71 fault), for N17 and patch F800.
+|$8208-$820B - snapshots of PORT2, PORT5, PORT6 and the chip inputs: not read by the program,
+|apparently for the tester (RAM read) [assumed].
+E98F G71 faults
+E991 check
+E994 present - 0
+E996 pressure
+E999 pressure of the previous call
+E99C remember
+E99F increment
+E9A0 rising
+E9A2 falling or fault - 0
+E9A3 $8073
+E9A6 PORT2
+E9A8 snapshot
+E9AB PORT5
+E9AD snapshot
+E9B0 PORT6
+E9B2 snapshot
+E9B5 chip inputs
+E9B8 snapshot
+E9BB end of task 2 - to the dispatcher
+label E9BE TAB4_ERR
+head E9BE
+|TAB4_ERR - table X: axis of 4 points (descending), followed by 4 values; quantity $8010.
+E9BE quantity
+E9C1 4 points
+E9C3 save X
+E9C4 find the interval
+E9C7 index
+E9C8 fraction
+E9CB A = fraction
+E9CC B = index
+E9CD X
+E9CE values after the axis
+E9D0 X -> value
+E9D1 B = fraction
+E9D2 interpolation
+E9D5 return
+label E9D6 ROW4_MAP
+head E9D6
+|ROW4_MAP - row of a 4×4 map by pressure (X = axis): $8011 index, $8013 fraction.
+E9D6 number of points
+E9D7 pressure
+E9DA G71 faults
+E9DC check
+E9DF no
+E9E1 substitute value
+E9E4 number of points
+E9E5 find the interval
+E9E8 $8011
+E9EB fraction
+E9EE $8013
+E9F1 return
+label E9F2 COL4_RPM
+head E9F2
+|COL4_RPM - column of a 4×4 map by rpm: $8010 index, $8012 fraction; B = row × 4 + column.
+E9F2 rpm
+E9F5 find the interval
+E9F8 $8010
+E9FB fraction
+E9FE $8012
+EA01 row
+EA04 × 4
+EA05 (× 4)
+EA06 + column
+EA09 return
+label EA0A MAP4X4
+head EA0A
+|MAP4X4 - double interpolation 4×4 (X = map, B = cell).
+EA0A X -> cell
+EA0B save
+EA0C rpm fraction
+EA0F in the row
+EA12 $8010
+EA15 next row (+4)
+EA17 X
+EA18 X -> cell
+EA19 fraction
+EA1C in the next row
+EA1F $8011
+EA22 two values
+EA25 pressure fraction
+EA28 between the rows
+EA2B return
+
+head FA00
+|Factory patch: $8214 is the multiplier for lambda jumps and steps (/256).
+|With rpm below C84A = 120 units and pressure below C84B = 140 it is 255 (full steps);
+|otherwise it decreases by 5 (C84D) per call down to 64 (C84C), so steps are 4 times smaller
+|at high rpm and load.
+FA00 X = $8000
+FA03 255
+FA05 rpm
+FA07 120 and above?
+FA0A yes - decrease
+FA0C pressure
+FA0E G71 faults?
+FA11 no
+FA13 substitute value
+FA16 140 and above?
+FA19 no - 255
+FA1B multiplier
+FA1E - 5
+FA21 not below 64?
+FA24 yes
+FA26 64
+FA29 $8214
+FA2C rpm
+FA2E back
+table FA31 1 empty byte
+head FA32
+|Patch: lambda jump × $8214 / 256.
+FA32 jump from the 4×4 map
+FA35 multiplier
+FA38 ×
+FA39 back
+table FA3C 4 empty bytes
+head FA40
+|Patch: lambda step × $8214 / 256.
+FA40 step from the 4×4 map
+FA43 multiplier
+FA46 ×
+FA47 back
+
+# ======================================================================
+# RESET (RES, SWI, TRAP, NMI failure): setup, RAM check, background loop
+# (CA88-CB90)
+# ======================================================================
+label CA88 RESET
+head CA88
+|RESET. Stack $8290. A full reset checks RAM from $8000; a restart after
+|engine stop (D12A) checks from $8005 to keep the codes ($8000-$8002) and
+|atmospheric pressure ($8004).
+|CPU registers: RMCR = $06 (SCI speed [?]), RP5CR = $C1 (internal RAM,
+|IRQ1), TRCSR1 = $1A (receive, transmit, receive interrupt), TCSR1 = $18 (capture
+|and compare 1 interrupts [assumed]), TCSR2 = $09 (output OC1 = N7 [assumed]), PORT2 = $20,
+|PORT6 = $20 (N17 closed, pump off), P2DDR = $02 (P21-P27 outputs),
+|P6DDR = $F9 (P62, P61 are inputs: coding, Hall).
+CA88 stack
+CA8B RAM check from $8000
+CA8E RMCR
+CA90 SCI speed
+CA92 RP5CR = $C1
+CA94 old value (bit 7 = RAM power was kept)
+CA96 store
+CA98 SCI: receive, transmit, receive interrupt
+CA9A store
+CA9C timer 1
+CA9E store
+CAA0 timer 1, part 2
+CAA2 store
+CAA4 PORT2.5 = 1
+CAA6 store
+CAA8 PORT6.5 = 1 (N17 closed), PORT6.6 = 0 (pump off)
+CAAA store
+CAAC P21-P27 are outputs
+CAAE store
+CAB0 P60, P63-P67 are outputs
+CAB2 store
+CAB4 start of RAM check
+CAB5 old RP5CR
+CAB6 chip setup table CB91 (number/value pairs)
+CAB9 pair
+CABB write to the chip
+CABE next
+CABF (+2)
+CAC0 all 16?
+CAC3 no
+CAC5 old RP5CR
+CAC6 internal RAM power kept?
+CAC7 no - fault copy is unreliable
+CAC9 fault copy
+CACC checksum = 0
+CACD + byte
+CACF next
+CAD0 up to $45
+CAD3 repeat
+CAD5 checksum correct?
+CAD7 no
+CAD9 start
+CADA patterns $55 and $AA
+CADD write $55
+CADF read back?
+CAE1 no - RAM faulty
+CAE3 write $AA
+CAE5 read back?
+CAE7 no - RAM faulty
+CAE9 clear
+CAEB next
+CAEC up to $8290
+CAEF repeat
+CAF1 restore codes from the copy
+CAF3 (same)
+CAF6 (same)
+CAF8 (same)
+CAFB (same)
+CAFD (same)
+CB00 start counter
+CB02 (same)
+CB05 $802C
+CB07 (same)
+CB0A check internal RAM
+CB0C start
+CB0D patterns
+CB10 write $55
+CB12 read back?
+CB14 no - faulty
+CB16 write $AA
+CB18 read back?
+CB1A no - faulty
+CB1C clear
+CB1E next
+CB1F end of internal RAM ($0100)?
+CB22 yes - done
+CB24 end of external RAM?
+CB27 no
+CB29 continue with internal $40-$FF
+CB2C check
+CB2E RAM faulty: ECU fault (1111)
+CB30 store
+CB33 disable internal RAM
+CB36 mode: start ($A8)
+CB38 store
+CB3B start angle 50
+CB3E × 0.75
+CB40 (same)
+CB41 round
+CB42 (same)
+CB44 output angle
+CB47 K-line timeout not running
+CB49 store
+CB4C angle limit 108
+CB4E store
+CB51 gain 8
+CB53 amplifier latch
+CB56 middle
+CB59 lambda integrator
+CB5C chip
+CB5F status register $1F
+CB61 select
+CB63 status
+CB65 chip ready (bit 5)?
+CB67 no - wait
+CB69 event mask: cylinder and tick
+CB6C locally
+CB6F store
+CB71 chip mode $25 (synchronisation search)
+CB74 store
+CB76 clear all events
+CB79 store
+CB7B enable interrupts
+label CB7C BG_LOOP
+head CB7C
+|BACKGROUND LOOP: all the time not taken by interrupts is spent on the ROM checksum.
+|The sum of all bytes $C000-$FFFF (8 bit) must be 0, otherwise ECU fault 1111
+|($8095.6). Any firmware modification must preserve this sum.
+CB7C start of ROM
+CB7F checksum = 0
+CB80 + byte
+CB82 next
+CB83 up to $FFFF
+CB85 checksum 0?
+CB86 yes - start over
+CB88 X = $8000
+CB8B ROM fault (1111)
+CB8E start over
+table CB90 1 byte $0A without references, probably balances the ROM checksum to 0 [assumed]
+table CB91 32 chip setup $0100 (number, value): 00 FF, 01 6C (108 half-teeth = 144°), 02 2D, 03 1B, 05 00, 06 05, 07 06, 08 03, 09 FF, 0A FF, 0B 00, 0C 33, 0D 76, 18 04, 19 00, 1F 00
+E39E sensor open circuit - without lambda
+DD03 end of task 0 - to the dispatcher
+
+# ======================================================================
+# Timer, SCI and IRQ2 interrupts (F5DC-F725), test exit (F726)
+# ======================================================================
+label F5DC OCF
+head F5DC
+|OCF - timer 1 compare.
+|OC1: PWM for N7 on pin P21 (contact 8). Period 21400 E clocks (1.536 MHz) =
+|71.8 Hz. On for $805D clocks, off for 21400 - $805D; the output level
+|toggles by itself (OLVL1).
+|OC2: every 7812 clocks (5.09 ms) one step of the slow PWM for N80: 32 steps = 163 ms,
+|for the first $8064 steps chip register $0B = FF (N80 open), for the rest 00.
+F5DC timer status, part 2
+F5DE compare 2?
+F5E0 yes - N80
+F5E2 read (clears the OC1 flag)
+F5E4 "on" time
+F5E7 level 1 now?
+F5EA yes - next edge after "on"
+F5EC period 21400
+F5EF - "on" = "off"
+F5F2 toggle the level at the next match
+F5F5 + to the match moment
+F5F7 new moment
+F5F9 exit
+F5FA timer counter
+F5FC + 7812 (5.09 ms)
+F5FF next compare 2
+F601 N80 PWM step
+F604 32?
+F606 yes - from the start
+F608 below the duty cycle?
+F60B yes - open
+F60D closed: 00
+F60F continue
+F611 step 0
+F612 duty cycle
+F615 zero - closed
+F617 open: FF
+F619 step + 1
+F61A store
+F61D synchronised?
+F61F check
+F622 no - leave alone
+F624 chip register $0B (N80)
+F626 store
+F629 exit
+label F62A CMI
+head F62A
+|CMI - timer 2 match: software PWM for N75 on PORT2.6 (contact 19).
+|The "on" phase lasts $8067 timer 2 counts, the "off" phase 255 - $8067.
+|0 means always off, 255 always on. The frequency depends on the timer 2 prescaler
+|(TCSR3, E760) [?].
+F62A clear the match flag
+F62D port 2
+F62F N75 on now?
+F631 yes
+F633 duty cycle
+F636 0 - leave off
+F638 255?
+F63A yes - switch on permanently
+F63C switch on
+F63E store
+F640 "on" time
+F643 to the timer
+F645 duty cycle
+F648 255?
+F64A yes - leave on
+F64C switch off
+F64E store
+F650 255
+F652 - duty cycle = "off"
+F655 to the timer
+F657 switch off
+F659 store
+F65B switch on
+F65D store
+F65F phase duration to timer 2
+label F661 TOF
+head F661
+|TOF and the empty end of CMI do nothing.
+F661 exit
+label F662 IRQ2
+head F662
+|IRQ2 - one-shot measurement [?]: disable IRQ2, $80F4 = |chip reg. $00 - 94|.
+|IRQ2 is enabled at CDF9 (Hall high and $806E.4). $80F4 is used by the lamp
+|in tester mode (F49D).
+F662 disable IRQ2
+F665 register $00
+F667 select
+F66A read
+F66D - 94
+F66F not below zero
+F671 absolute value
+F672 $80F4
+F675 exit
+label F676 ICF
+head F676
+|ICF - capture on P20 (input Tin): REFERENCE MARK G4 (once per crankshaft revolution) [assumed from logic].
+|$8095.4 - a mark occurred (for the "540 teeth without a mark" check, D352).
+|The first 3 marks check G4 ($8095.0). After that, not during start, the Hall signal must
+|change from mark to mark (phase $8095.2): 2 times high at the wrong moment gives 2113
+|($8094 bits 3, 2), 3 times low at the wrong moment gives 2113 (bits 1, 0).
+|A mark without teeth between marks ($8095.3 not set) 2 times gives 2111 G28 ($8094 bits 7, 6).
+F676 X = $8000
+F679 mark occurred ($8095.4)
+F67C G4 already checked?
+F67F yes
+F681 "teeth already occurred"
+F684 exit the actuator test
+F687 mark counter
+F689 already 2?
+F68B yes - G4 checked
+F68D + 1
+F68E store
+F690 exit
+F692 G4 checked ($8095.0)
+F695 0
+F696 store
+F698 start?
+F69B yes - do not check Hall
+F69D Hall high?
+F6A0 no
+F6A2 expected low (phase)?
+F6A5 no - phase correct
+F6A7 mismatch counter
+F6A9 + 1
+F6AA store
+F6AC below 2?
+F6AE yes
+F6B0 Hall fault (2113)
+F6B3 continue
+F6B5 clear suspicion
+F6B8 1
+F6BA store
+F6BC phase: next is low
+F6BF continue
+F6C1 expected high?
+F6C4 no - phase correct
+F6C6 mismatch counter
+F6C8 + 1
+F6C9 store
+F6CB below 3?
+F6CD yes
+F6CF Hall fault (2113)
+F6D2 continue
+F6D4 clear suspicion
+F6D7 1
+F6D9 store
+F6DB phase: next is high
+F6DE teeth between marks occurred ($8095.3)?
+F6E1 no
+F6E3 clear G28 suspicion
+F6E6 clear "teeth occurred"
+F6E9 counter = 0
+F6EB marks without teeth
+F6ED + 1
+F6EE below 2?
+F6F0 yes
+F6F2 G28 fault (2111)
+F6F5 0
+F6F6 store
+F6F8 clear the capture flag
+F6FA (read ICR)
+F6FC exit
+label F6FD SCI
+head F6FD
+|SCI - K-line receive interrupt [?]. If it is time to transmit ($80F7.6), clear it;
+|otherwise, if the sync bytes have been sent and no byte is waiting yet, mark it ($80F6.4).
+|Then disable this interrupt and discard the received byte (its own echo on
+|the single-wire K-line [assumed]). Main reception is by polling in task 0.
+F6FD byte received?
+F700 no
+F702 communication flags
+F705 time to transmit?
+F707 yes
+F709 session state
+F70C sync bytes not sent - discard
+F70E byte already waiting?
+F710 yes - exit
+F712 mark
+F714 store
+F717 continue
+F719 clear "time to transmit"
+F71B store
+F71E disable the receive interrupt
+F721 read the status
+F723 discard the byte
+F725 exit
+label F726 TEST_EXIT
+head F726
+|TEST_EXIT - the engine is turning (or the test is over): set $8003.4 once
+|and reset the blink code and actuator test state.
+F726 save X
+F727 X = $8000
+F72A already?
+F72D yes
+F72F $8003.4
+F732 0
+F733 0
+F734 output state
+F736 timer
+F738 test step
+F73A N17 counters
+F73C phase timer, test divider
+F73E contact 5 closed time
+F740 restore X
+F741 return
+table F742 14 empty (FF)
+head F750
+|Patch to E56D: +5 % to N7 at full load with prolonged knock ($807A.5)
+|or with a knock sensor fault ($80B6 bits 7, 5).
+F750 prolonged knock?
+F753 yes - +5 % (F75D)
+F755 knock sensor faults
+F757 check
+F75A present - +5 %, absent - no addition
+F75D +5 %
+
+# ======================================================================
+# DATA TABLES (C000-CA04), empty areas and vectors
+# ======================================================================
+table C000 256 IGNITION MAP 1 (Super, warm engine), 16×16: rows are pressure (C200), columns are rpm (C210); 1 unit ≈ 1°, larger means later [assumed]
+table C100 256 IGNITION MAP 2 (cold engine / prolonged knock), 16×16
+table C200 16 pressure axis for the ignition maps (descending): 192 … 51
+table C210 16 rpm axis (shared): 40 53 67 80 93 107 120 133 147 160 173 187 200 213 220 240
+table C220 16 overboost limit by rpm (ED78)
+table C230 16 retard hold after knock, in events, by rpm (DDE8)
+table C240 16 retard decay timer, in events, by rpm (DDF8)
+table C250 16 rpm axis for the idle angle (DF05)
+table C260 16 idle angle above 890 rpm
+table C270 16 rpm axis for jerk damping (E129)
+table C280 16 N7 addition during jerk damping
+table C290 16 angle retard during jerk damping
+table C2A0 16 angle return step during jerk damping
+table C2B0 4 atmospheric pressure axis (altitude): 128 122 109 102
+table C2B4 4 N17 during start: ticks open by altitude: 255 20 10 5
+table C2B8 4 N17 during start: ticks closed by altitude: 0 5 10 10
+table C2BC 4 N17: altitude factor 4 3 2 1
+table C2C0 4 running time axis (step 5.12 s) for the angle correction: 24 28 35 47
+table C2C4 4 angle correction by time: 10 8 8 0
+table C2C8 4 empty (FF)
+table C2CC 4 G62 axis for the idle angle correction: 197 189 180 158
+table C2D0 16 idle angle correction 4×4 (altitude × G62)
+table C2E0 16 pressure curve by rpm: above it is the full load mode for N7 (ED97)
+table C2F0 16 N7 addition after pressure rise, by rpm
+table C300 256 N7 MAP, %, 16×16: rows are pressure (C500), columns are rpm (C510)
+table C400 256 N7 MAP with sensor open circuit, 16×16
+table C500 16 pressure axis of the N7 maps: 255 173 169 … 38 0
+table C510 16 rpm axis of the N7 maps: 40 53 67 80 93 107 120 133 147 160 173 187 200 220 240 255
+table C520 16 N7 correction by G62, warm start: axis 8 points + 8 values (128 = no correction)
+table C530 16 N7 correction by G62, warm start and sensor open circuit
+table C540 16 N7 correction by G62, cold start
+table C550 4 altitude factor for N7: 255 229 204 191
+table C554 4 constants: 120 (rpm), 128 (pressure) for the angle correction; 5 (% enrichment on knock); 4 (retard on Hall fault)
+table C558 4 lambda pressure axis: 129 102 76 51
+table C55C 4 lambda rpm axis: 40 64 88 112
+table C560 32 lambda jump to the "rich" side, 4×4: AT and HS (BUND)
+table C580 32 lambda jump to the "lean" side, 4×4: AT and HS (BUND)
+table C5A0 32 lambda step "rich" (BUND)
+table C5C0 32 lambda step "lean" (BUND)
+table C5E0 32 jump "rich" (CAL)
+table C600 32 jump "lean" (CAL)
+table C620 32 step "rich" (CAL)
+table C640 32 step "lean" (CAL)
+table C660 4 N17: lowest temperature axis: 216 205 169 90
+table C664 4 N17: start duration × 10 ticks: 120 50 10 0
+table C668 4 N17: axis for $8079: 216 169 123 90
+table C66C 4 N17: $8079: 214 154 79 29
+table C670 4 N17 after start: axis 211 205 189 169
+table C674 4 N17 after start: × 10 ticks: 30 20 10 0
+table C678 8 N17: pressure increment axis
+table C680 8 N17: opening time by increment
+table C688 8 N17: enrichment flag by increment
+table C690 4 N17: G62 axis for the weights
+table C694 4 N17: weight 1
+table C698 4 N17: weight 2
+table C69C 4 G42 axis for the angle correction under boost: 204 156 128 109
+table C6A0 4 angle correction by G42 (+60): 60 60 61 62
+table C6A4 14 lambda jumps and steps at idle (AT/HS × BUND/CAL) and first step (C6B0/C6B1)
+table C6B2 44 mixture, start, rpm and knock constants (thresholds 189, 80 %, 50 %, 40 %, sensor band 58/32, … see references in the code)
+table C6DE 2 thresholds "warmed up" (39) and "load" (90)
+table C6E0 4 rpm axis for the return to map 1
+table C6E4 4 time until return to map 1 (× 5.12 s)
+table C6E8 4 lowest temperature axis for the delay after start
+table C6EC 4 delay after start (task 3 calls)
+table C6F0 4 G42 axis for the addition to the overboost limit
+table C6F4 4 addition to the overboost limit: 26 26 26 0
+table C6F8 4 N75: pilot control pressure axis
+table C6FC 4 N75: pilot control rpm axis
+table C700 16 N75: pilot control 4×4
+table C710 8 N75: target rpm axis
+table C718 8 N75: BOOST TARGET by rpm: 174 178 176 177 179 179 178 176
+table C720 8 N75: fast part on undershoot (axis 4 + values 4)
+table C728 8 N75: fast part on overshoot
+table C730 8 N75: integrator step on undershoot
+table C738 8 N75: integrator step on overshoot
+table C740 8 pressure rise rate -> $806B
+table C748 8 pressure fall rate -> $806B
+table C750 4 N75: rpm axis for the duty cycle limit
+table C754 4 N75: maximum duty cycle: 217 217 217 204
+table C758 4 N75: G42 axis for the reduction
+table C75C 4 N75: reduction by G42: 83 38 13 13
+table C760 8 N75: G62 axis for the reduction
+table C768 8 N75: reduction by G62
+table C770 8 N75: hot engine time axis
+table C778 8 N75: reduction by hot engine time
+table C780 48 diagnostic and protection constants (sensor, pressure, rpm and time thresholds; see references in the code)
+table C7B0 8 N80: pressure axis (8 points)
+table C7B8 8 N80: rpm axis
+table C7C0 64 N80: purge map 8×8 (0…31 of 32)
+table C800 64 N80: purge map with $8066.1
+table C840 16 N115 and G71 constants (48/58 rev., 50 calls, 4, …, 120/140/64/5 for patch FA00)
+table C850 16 rpm axis for knock parameters
+table C860 16 knock window start [assumed]
+table C870 16 knock window length [assumed]
+table C880 16 lower limit of the knock measurement
+table C890 16 "sensor silent" threshold
+table C8A0 16 knock measurement scale
+table C8B0 16 rpm axis for the knock thresholds
+table C8C0 80 knock thresholds f, 5 cylinders × 16
+table C910 5 knock sensor by cylinder number (0 = G61, FF = G66)
+table C915 3 knock: background step (2 bytes), smoothing weight
+table C918 8 voltage axis for coil dwell
+table C920 8 coil dwell time T
+table C928 48 fault BLINK CODES (24 codes, bit order $8000.7 … $8002.0)
+table C958 14 actuator test BLINK CODES: 4433 4441 4442 4443 4343 4331 0000
+table C966 72 fault codes for the K-line: 24 × (VAG number, flag)
+table C9AE 21 actuator numbers for the K-line: 01259 01261 01262 01263 01247 01241 00767
+table C9C3 66 identification (ASCII): "447905383L ", "Motor      ", "PMC AT/CAL.", "PMC AT/BUND", "PMC HS/CAL.", "PMC HS/BUND"
+table D092 1 dead byte (left under the patch)
+table F7D6 10 empty (FF)
+table F7E0 8 patch F800: pressure increment axis
+table F7E8 8 patch F800: retard
+table F7F0 3 patch F800: G62 threshold 63, duration 25, multiplier 10
+table F7F3 13 empty (FF)
+table F86F 1 empty
+table F879 7 empty
+table F889 7 empty
+table F89C 4 empty
+table F8AC 4 empty
+table F8CB 5 empty
+table F8E1 15 empty
+table F914 12 empty
+table F92E 2 empty
+table F942 190 empty (FF)
+table FA4A 1436 empty (FF), free space
+table FFE6 4 4 bytes before the vectors: 6F 10 14 01 [?] (they can be read over the K-line)
+table FFEA 22 VECTORS: IRQ2 F662, CMI F62A, TRAP CA88, SCI F6FD, TOF F661, OCF F5DC, ICF F676, IRQ1 CBB1, SWI CA88, NMI F5A3, RES CA88

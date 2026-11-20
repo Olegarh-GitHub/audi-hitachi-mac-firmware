@@ -22,6 +22,17 @@
 import sys
 from collections import defaultdict
 
+# Служебные строки листинга на языке разметки: --lang=ru (по умолчанию), en, de.
+LANG = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--lang=")), "ru")
+T = {
+    "ru": {"called": "вызов из", "table": "таблица $%04X, %d байт: %s",
+           "title": "Листинг %s (HD6303X), база $%04X. Комментарии: %s"},
+    "en": {"called": "called from", "table": "table $%04X, %d bytes: %s",
+           "title": "Listing of %s (HD6303X), base $%04X. Comments: %s"},
+    "de": {"called": "aufgerufen von", "table": "Tabelle $%04X, %d Bytes: %s",
+           "title": "Listing %s (HD6303X), Basis $%04X. Kommentare: %s"},
+}[LANG]
+
 INH, IMM8, IMM16, DIR, IDX, EXT, REL, IMDIR, IMIDX = range(9)
 SIZE = {INH: 1, IMM8: 2, IMM16: 3, DIR: 2, IDX: 2, EXT: 3, REL: 2, IMDIR: 3, IMIDX: 3}
 
@@ -304,7 +315,7 @@ def listing(r, title):
                 if a not in n.head:
                     out.append("")
                 if a in r.subs and a in rts:
-                    out.append(lab + ":".ljust(40 - len(lab)) + "; вызов из: " + ", ".join(sorted(rts[a])))
+                    out.append(lab + ":".ljust(40 - len(lab)) + "; " + T["called"] + ": " + ", ".join(sorted(rts[a])))
                 else:
                     out.append(lab + ":")
             hx = " ".join("%02X" % r.rd(a + k) for k in range(sz))
@@ -317,7 +328,7 @@ def listing(r, title):
         if a in n.table:
             cnt, text = n.table[a]
             out.append("")
-            out.append("; таблица $%04X, %d байт: %s" % (a, cnt, text))
+            out.append("; " + T["table"] % (a, cnt, text))
             tabend = a + cnt
         s = a
         a += 1
@@ -364,7 +375,7 @@ def main():
         sys.exit(__doc__)
     rom, notes = sys.argv[1], sys.argv[2]
     r = Rom(rom, Notes(notes))
-    mode = sys.argv[3] if len(sys.argv) > 3 else ""
+    mode = next((a for a in sys.argv[3:] if not a.startswith("--lang=")), "")
     if mode in ("--cov", "--todo"):
         c = coverage(r)
         pct = lambda x, y: 100.0 * x / y if y else 0.0
@@ -390,7 +401,7 @@ def main():
             for a in c["todo"]:
                 print("  %04X" % a)
         return
-    title = "Листинг %s (HD6303X), база $%04X. Комментарии: %s" % (rom, r.base, notes)
+    title = T["title"] % (rom, r.base, notes)
     print(listing(r, title))
 
 

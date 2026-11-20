@@ -1,0 +1,6448 @@
+# Annotation MAC-14 (Format: docs/asm/NOTES_FORMAT.md)
+# Markierungen: ohne Markierung am Code geprüft; [Vermutung] bedeutet Annahme; [?] bedeutet unbekannt.
+
+ptrtab D1C9 4      # Aufgaben des Dispatchers
+ptrtab DADF 16     # KW1281-Befehle
+
+legend
+|LEGENDE MAC-14 (J88, Audi 100/200 Typ 44, Motor MC2)
+|Prozessor HD63B03XP, EPROM Fujitsu MBM27128 (16 KB, $C000-$FFFF), RAM $8000-$8290.
+|Externer Chip an Adresse $0100/$0101 (Registernummer / Daten): A/D-Wandler, Zahnzählung,
+|Zündung, digitale Eingänge. Sein Typ ist nicht ermittelt.
+|Tick ≈ 10 ms [Vermutung, abgeleitet aus dem 5-Baud-Empfangscode; Toleranz des Testers ±10 %].
+|Drehzahl: 1 Einh. von $8018 ≈ 22…24 U/min [Vermutung], genaue Skalierung nicht bestätigt.
+|Port 2: P2DDR Bit 1 = 1 schaltet P21-P27 alle auf einmal als Ausgänge (Datenblatt HD6303X),
+|daher arbeiten PORT2.5 (J17) und PORT2.6 (N75) als Ausgänge.
+|Register $14 ist RP5CR (RAM und Port 5): Bit 6 schaltet das interne RAM $40-$FF ein,
+|Bit 7 ist das Kennzeichen für erhaltene RAM-Versorgung, Bits 0/1 geben IRQ1/IRQ2 frei. Aufgaben: 0 jeden Tick,
+|1 alle 2 Ticks, 2 alle 4, 3 alle 10 (Tabelle D1E1).
+|
+|Kennung      Bauteil                              Pin    Ort im Programm
+|F            Bremslichtschalter                   32     Chip, Reg. $19 Bit 3 [Vermutung]
+|F60          Leerlaufschalter                     20     Chip, Reg. $19 Bit 5 [Vermutung]
+|F76          Thermoschalter KMT > 119 °C          14     PORT5.7 [Vermutung]
+|F81          Vollastschalter                      26     Chip, Reg. $19 Bit 4 [Vermutung]
+|G4           OT-Geber (Stift im Schwungrad)       13/12  Chip, IRQ1-Ereignisse [Vermutung]
+|G28          Drehzahl (Zähne des Zahnkranzes)     11/29  Chip, Reg. $0C/$0D -> $8018
+|G39          Lambdasonde                          30     A/D-Kanal 3 (10 Bit) -> $801C
+|G40          Hallgeber im Zündverteiler           27/25  PORT6.1 (Eingang)
+|G42          Ansauglufttemperatur                 24     A/D-Kanal 7 -> $8020 [Vermutung]
+|G61, G66     Klopfsensoren                        15,2/16 A/D-Kanal 6 über Verstärker [Vermutung]
+|G62          Kühlmitteltemperatur                 10     A/D-Kanal 2 -> $801B [Vermutung]
+|G71          Saugrohrdruck (im Steuergerät)       —      A/D-Kanal 0 -> $8019 [Vermutung]
+|J17          Kraftstoffpumpenrelais               21     PORT6.6, 1 = ein [Vermutung]: aus ohne Synchronisation,
+|                                                          ein im Test 4433 (F930), aus durch Schutzfunktionen (EF60)
+|J128         Ladedruckanzeige im Kombiinstrument  17     nicht gefunden [?]
+|J142         Leerlaufsteuergerät (Signaleingang)  4      A/D-Kanal 5 -> $801E (N65) [Vermutung]
+|K66 / L      VEZ-Lampe, Ausgabe der Blinkcodes    31     PORT6.4
+|N7           Gemisch-Taktventil                   8      Timerausgang OC1, 71,8 Hz; Test 4441 = 50 %
+|N17          Kaltstartventil                      1      PORT6.5, 0 = offen; Test 4443
+|N65          Schubabschaltung (über J142)         4      siehe J142
+|N70          Zündendstufe                         22     Chip $0100 [Vermutung]
+|N75          Taktventil Ladedruckregelung         19     PORT2.6, PWM im CMI-Interrupt; Test 4442
+|N80          Magnetventil Aktivkohlebehälter      3      Chip, Reg. $0B: 00/FF langsame PWM; Test 4343
+|N115         Absperrventil Tank                   23     Chip, Reg. $19 Bit 2; Test 4331
+|—            L-Leitung (Eingang Diagnoseanforderung) 5   PORT5.6
+|—            K-Leitung (KW1281)                   28     SCI (P23 Empfang / P24 Senden)
+|—            Codierung (Stecker T6m)              6, 34  PORT6.2 und PORT5.4, Zuordnung [?]
+|—            Bordnetzspannung                     35     A/D-Kanal 1 -> $801A [Vermutung]
+|—            Signal „Programm läuft“ (Watchdog)  —      PORT6.7, wird jeden Tick umgeschaltet; fällt es aus, startet eine externe Schaltung den Prozessor neu [Vermutung]
+|—            Drehzahlmesser, J142                 7      PORT6.3 [Vermutung]
+|—            unbekannter Ausgang                  ?      PORT2.5: 1 bei Drehzahl ≥ 20 Einh. nach Synchronisation, nach Reset 1 [?]
+|
+|Blinkcodes ($C928), je Code zwei Bits im Fehlerspeicher:
+|1111 Steuergerät   2111 G28   2112 G4   2113 G40   2121 F60   2123 F81
+|2141/2143 Grenze der Spätverstellung durch Klopfregelung   2142 G61   2144 G66
+|2214 Überdrehzahl   2221/2222 G71   2224 Ladedruck zu hoch
+|2312 G62   2322 G42   2342 Lambdaregelung   4444 kein Fehler
+|(Bedeutung der Codes aus einer älteren Analyse übernommen, wird am Code nachgeprüft)
+|Stellglieddiagnose ($C958): 4433 J17, 4441 N7, 4442 N75, 4443 N17, 4343 N80, 4331 N115.
+|Reihenfolge der Testschritte: das Bit in $80AF wird nach rechts geschoben: $80 J17, $40 N7, $20 N75,
+|$10 N17, $08 N80, $04 N115 (geprüft für N7, N75, N17, N80, N115).
+
+# ---- Aufgaben und Vektoren (Wurzelnamen)
+label D220 TASK0
+label DD18 TASK1
+label E30A TASK2
+label EA2C TASK3
+
+# ======================================================================
+# Allgemeine Unterprogramme: Achsensuche und Interpolation (CA05-CA87)
+# Typischer Aufruf:  LDX #Achse / LDAA Wert / LDAB #Punkte / JSR AXIS_UP
+#                    PSHB / JSR FRAC_UP / TBA / PULB / LDX #Tabelle / ABX / TAB / JSR INTERP
+# ======================================================================
+label CA05 FRAC_UP
+head CA05
+|FRAC_UP: Anteil zwischen zwei Punkten einer steigenden Achse.
+|Eingang: A = Wert, X -> linker Achsenpunkt (Ergebnis von AXIS_UP).
+|Ausgang: B = (A - Achse[i]) * 256 / (Achse[i+1] - Achse[i]), also 0...255.
+CA05 B = 0 für den Fall eines exakten Treffers
+CA06 A = Wert minus linker Punkt
+CA08 genau auf dem Punkt? ja: Anteil 0
+CA0A B = Intervallbreite
+CA0E dividieren
+label CA10 FRAC_DN
+head CA10
+|FRAC_DN: dasselbe für eine fallende Achse (Achse[i] > Achse[i+1]).
+CA10 B = 0 für den Fall eines exakten Treffers
+CA11 A = linker Punkt minus Wert
+CA14 genau auf dem Punkt? ja: Anteil 0
+CA16 B = Intervallbreite (positiv)
+label CA1B DIV8
+head CA1B
+|DIV8: Anteilsdivision: B = A * 256 / B. Bedingung: A < B.
+|Gewöhnliche schriftliche Division, 8 Schritte. Die Quotientenbits werden
+|invertiert gesammelt und am Ende umgedreht (COMB).
+CA1B Divisor auf den Stack
+CA1C Dividend auf den Stack
+CA1D Platz für den Schrittzähler
+CA1F 8 Schritte
+CA21 Zähler
+CA23 A = Dividend (Rest)
+CA25 Quotient: Anfangswert FF (Bits invertiert)
+CA27 speichern
+CA29 B ist der höherwertige Teil des Rests
+CA2A Rest nach links schieben
+CA2B Übertrag nach B
+CA2C Divisor subtrahieren
+CA2E Borgen berücksichtigen
+CA30 nicht negativ? ja: Quotientenbit 1 (hier wird 0 geschrieben, da invertiert)
+CA32 negativ geworden: Divisor wieder addieren
+CA34 Übertrag = 1 (Quotientenbit 0, invertiert geschrieben)
+CA36 Quotientenbit ins Ergebnis
+CA38 nächster Schritt
+CA3A Schritte übrig? ja: wiederholen
+CA3C Zähler entfernen
+CA3D B = invertierter Quotient
+CA3E Divisor entfernen
+CA3F B = Quotient (Anteil 0...255)
+CA40 Rücksprung
+label CA41 INTERP
+head CA41
+|INTERP: lineare Interpolation zwischen zwei benachbarten Tabellenwerten.
+|Eingang: X -> Tabelle[i], B = Anteil (0...255).
+|Ausgang: A = T[i] + (T[i+1] - T[i]) * Anteil / 256, gerundet.
+CA41 T[i]
+CA43 auf den Stack
+CA44 T[i+1]
+CA46 auf den Stack
+CA47 X -> T[i+1] auf dem Stack, danach T[i]
+CA48 A = T[i+1]; an seine Stelle kommt das Vorzeichen
+CA4A Vorzeichen = 0 (steigend)
+CA4C A = T[i+1] - T[i]
+CA4E Tabelle steigend? ja: Differenz ist bereits positiv
+CA50 fallend: Betrag der Differenz
+CA51 Vorzeichen = FF (fallend)
+CA53 Differenz * Anteil
+CA54 Rundung: oberstes Bit des niederwertigen Bytes
+CA55 dazuaddieren
+CA57 B = Vorzeichen
+CA58 Tabelle steigend?
+CA59 ja: addieren
+CA5B nein: subtrahieren
+CA5C B = T[i]
+CA5D A = T[i] + Korrektur
+CA5E Rücksprung
+label CA5F AXIS_UP
+head CA5F
+|AXIS_UP: Intervall auf einer steigenden Achse suchen.
+|Eingang: A = Wert, X -> Achse, B = Anzahl der Punkte.
+|Ausgang: X -> linker Punkt des Intervalls, B = seine Nummer, A = Wert.
+|Unter dem ersten Punkt: Nummer 0 und A = erster Punkt (Anteil wird 0).
+|Über dem letzten: letzter Punkt und A = sein Wert.
+CA5F Wert sichern
+CA60 Anzahl der Punkte sichern
+CA61 Wert kleiner als dieser Punkt?
+CA63 ja: Intervall gefunden
+CA65 nächster Punkt
+CA66 noch Punkte übrig?
+CA67 nein: über das Achsenende hinaus
+CA69 zum nächsten
+label CA6B AXIS_DN
+head CA6B
+|AXIS_DN: dasselbe für eine fallende Achse (zum Beispiel Temperatur vom A/D-Wandler:
+|je kälter, desto größer die Zahl).
+CA6B Wert sichern
+CA6C Anzahl der Punkte sichern
+CA6D Wert größer als dieser Punkt?
+CA6F ja: Intervall gefunden
+CA71 nächster Punkt
+CA72 noch Punkte übrig?
+CA73 ja: weiter
+CA75 über das Ende hinaus: B = Anzahl der Punkte
+CA76 A = Wert
+CA77 Nummer des letzten Punkts
+CA78 X -> letzter Punkt
+CA79 A = Punktwert (Anteil wird 0)
+CA7B Rücksprung
+CA7C A = Anzahl der Punkte
+CA7D A = Nummer des gefundenen Punkts
+CA7E nach B
+CA7F ist das der erste Punkt (Wert vor dem Achsenanfang)?
+CA81 nein: linker Punkt = vorheriger
+CA82 X -> linker Punkt
+CA83 A = Wert
+CA84 Rücksprung
+CA85 Wert entfernen; A = erster Punkt
+CA86 zum gemeinsamen Ausgang
+
+# ======================================================================
+# Drosselklappenschalter und Kennzeichen „G71 defekt unter Last“ (D1E5-D21F)
+# ======================================================================
+label D1E5 IS_IDLE
+head D1E5
+|IS_IDLE: Drosselklappe geschlossen (Leerlaufschalter F60)?
+|Ausgang: C = 1 bedeutet geschlossen. Liegt die Drehzahl nicht unter dem ersten Punkt der Achse C210
+|(40 Einh. ≈ 890 U/min) und ist der Leerlaufschalter als defekt erkannt ($8093.3),
+|lautet die Antwort immer „nicht geschlossen“.
+D1E5 Drehzahl
+D1E8 unter 40 Einh. (≈890 U/min)?
+D1EB ja: dem Schalter vertrauen
+D1ED Fehlerbit Leerlaufschalter
+D1EF Leerlaufschalter defekt?
+D1F2 ja: Drosselklappe als offen behandeln
+D1F4 digitale Eingänge lesen (Chip-Reg. $19)
+D1F6 Bit 5 ist der Leerlaufschalter F60
+D1F8 offen? ja: Drosselklappe offen
+D1FA geschlossen: C = 1
+D1FC C = 0: Drosselklappe offen
+label D1FE MAP_BAD_LOAD
+head D1FE
+|MAP_BAD_LOAD: G71 defekt und Motor unter Last?
+|Ausgang: C = 1, wenn ein Druckfehler vorliegt ($8091 & $72), die Drehzahl nicht unter
+|40 Einh. liegt und die Drosselklappe nicht geschlossen ist. Dann wird statt des Messwerts
+|der Ersatzwert $C79E verwendet.
+D1FE Fehlerbits Druck
+D200 Druckfehler vorhanden?
+D203 nein: C = 0
+D205 Drehzahl
+D208 unter 40 Einh. (≈890 U/min)?
+D20B ja: C = 0
+D20D Drosselklappe geschlossen?
+D20F ja: C = 0
+D211 C = 1: Ersatzwert für den Druck verwenden
+D213 C = 0
+label D215 RD_INPUTS
+head D215
+|RD_INPUTS: Chipregister $19 lesen, die digitalen Eingänge.
+|Bit 5 ist F60 (Leerlauf), Bit 4 ist F81 (Vollast), Bit 3 ist der Bremslichtschalter,
+|Bit 2 liest den Ausgang N115 zurück. 1 = Kontakt geschlossen [Vermutung aus der Logik].
+D215 Registernummer $19
+label D217 CHIP_RD
+head D217
+|CHIP_RD: Chipregister $0100 lesen: A = Nummer, am Ausgang A = Daten.
+|Interrupts sind gesperrt, damit ein IRQ die Registernummer zwischen Schreiben und Lesen nicht verändert.
+D217 Interrupts sperren
+D218 Registernummer
+D21B Daten
+D21E Interrupts freigeben
+
+# ======================================================================
+# Aufgabe 3: Betriebszustandsflags $8029, Flags $8028, Abschaltung der Kraftstoffpumpe
+# (EDF7-EF63, Patch F930). Aufruf alle 10 Ticks (100 ms).
+# ======================================================================
+head EDF7
+|Verzögerung nach dem Start: wie viele Aufrufe (je 100 ms) die Drehzahl
+|über 20 Einh. bleiben muss, bis $8029.0 „Verzögerung nach dem Start abgelaufen“ gesetzt wird.
+|Tabelle über die niedrigste Temperatur seit dem Einschalten ($807B):
+|Achse C6E8 = 216 205 189 90, Werte C6EC = 10 10 1 0.
+|Bei niedrigem Luftdruck ($8004 ≤ 122) gibt es keine Verzögerung [?].
+EDF7 Temperaturachse C6E8 (fallend)
+EDFA kälteste Kühlmitteltemperatur seit dem Einschalten
+EDFD 4 Punkte
+EDFF Intervall suchen
+EE02 Punktnummer auf den Stack
+EE03 Anteil
+EE06 A = Anteil
+EE07 B = Punktnummer
+EE08 Verzögerungstabelle C6EC
+EE0B X -> Wert
+EE0C B = Anteil
+EE0D A = Verzögerung (Aufrufe von Aufgabe 3)
+EE10 Startflags
+EE13 $8075.6 [?]
+EE15 gesetzt: keine Verzögerung
+EE17 Luftdruck beim Einschalten
+EE1A über 122 (≈0,95 bar) [Vermutung]?
+EE1D ja: Verzögerung aus der Tabelle
+EE1F sonst keine Verzögerung
+EE20 $8015 = Verzögerung
+EE23 Drehzahl
+EE26 in einer temporären Zelle sichern
+EE29 Betriebszustandsflags
+EE2C Startvorgang läuft (Bit 7)? ja: Bit 6 nicht anfassen
+EE2E Codierung: PORT6.2 = 1 bedeutet Schaltgetriebe (HS)
+EE31 AT? ja: AT-Schwelle
+EE33 HS: Schwelle C6D5 = 30 Einh. (≈670 U/min)
+EE38 AT: Schwelle C6D2 = 30 Einh. (beide gleich)
+EE3B Drehzahl unter der Schwelle? ja: Bit 6 nicht setzen
+EE3D Bit 6: Motor ist angesprungen (Drehzahl ≥ 30 Einh.)
+EE3F zuerst Bit 1 löschen
+EE41 Drehzahl unter C6BF = 20 Einh. (≈440 U/min)?
+EE44 ja: Verzögerungszähler auf null
+EE46 Bit 0 (Verzögerung abgelaufen) schon gesetzt?
+EE48 ja: Bit 1 nicht setzen
+EE4A Startflags
+EE4D $8075.6 [?]
+EE4F gesetzt: Bit 1 nicht setzen
+EE51 Bit 1: Motor dreht, Verzögerung läuft noch
+EE53 Verzögerungszähler
+EE56 $8015 erreicht?
+EE59 ja: Verzögerung abgelaufen
+EE5B Zähler + 1
+EE5E Drehzahl unter 20 Einh.: Zähler = 0
+EE5F Zähler speichern
+EE64 Bit 0: Verzögerung nach dem Start abgelaufen
+EE66 Drehzahl
+EE69 unter 16 Einh. (≈350 U/min)?
+EE6B nein: Bit 3 löschen
+EE6D Bit 3 = 0 (wird nur beim Reset gesetzt)
+EE6F Motorlaufzeit (Aufrufe von Aufgabe 1, je 20 ms)
+EE72 weniger als 1500 (30 s)?
+EE75 nein: Bit 2
+EE77 Bit 2: Motor läuft länger als 30 s
+EE79 Drehzahl unter C6BD = 24 Einh. (≈530 U/min)?
+EE7C nein: Bit 5 löschen
+EE7E Bit 5 = 0
+EE80 Codierung AT/HS
+EE83 HS? ja: HS-Schwelle
+EE85 AT: C6D0 = 16 Einh. (≈350 U/min)
+EE8A HS: C6D3 = 16 Einh. (beide gleich)
+EE8D Drehzahl unter der Schwelle?
+EE8F nein: Start beendet, Bit 7 löschen
+EE93 ja: Bit 6 löschen (Motor nicht angesprungen oder abgewürgt)
+EE95 Bit 4 wird aus dem alten Wert übernommen
+EE97 Maske für Bit 4
+EE99 Interrupts sperren: $8029 wird auch von Interrupts geändert
+EE9A altes Bit 4
+EE9D zusammensetzen
+EE9E $8029 = neue Betriebszustandsflags
+EEA1 Interrupts freigeben
+EEA2 Flags $8028
+EEA5 Zahnzählung pro Tick, 16 Bit
+EEA8 nicht unter C79C = 268 Einh. (≈5960 U/min bei 22,2 oder ≈6490 bei 24,2 U/min pro Einh.; Skalierung nicht bestätigt)?
+EEAB nein: Bit 7 nicht setzen
+EEAD Bit 7: Überdrehzahl
+EEAF Hysterese 4 Einh.
+EEB1 Drehzahl + 4
+EEB2 noch unter der Grenze?
+EEB5 nein: Bit 7 belassen
+EEB7 ja: keine Überdrehzahl
+EEB9 $8028 speichern
+EEBC digitale Eingänge
+EEBF Flags $8028
+EEC2 Bit 3 ist der Bremslichtschalter
+EEC4 Pedal losgelassen? ja: zurücksetzen
+EEC6 „Bremse gehalten“ schon gesetzt?
+EEC8 ja: weiter
+EECA Zähler Bremsbetätigung
+EECD + 1 (ein Aufruf = 100 ms)
+EECE weniger als C79A = 20 (2 s)?
+EED1 ja: Zähler speichern
+EED3 Bit 3: Bremse länger als 2 s gehalten
+EED7 Pedal losgelassen: Bit 3 löschen
+EED9 Zähler = 0
+EEDA Zähler speichern
+EEDD Druckschwelle C799 = 154 (≈1,2 bar abs. [Vermutung])
+EEE0 Druck über der Schwelle?
+EEE3 nein: Bit 2 nicht setzen
+EEE5 Bit 2: Druck über 154
+EEE7 Hysterese 9
+EEE9 Druck unter 145?
+EEEC nein: Bit 2 belassen
+EEEE ja: Bit 2 löschen
+EEF0 Drehzahlschwelle C79B = 120 Einh. (≈2670 U/min)
+EEF3 Drehzahl über der Schwelle?
+EEF6 nein: Bit 1 nicht setzen
+EEF8 Bit 1: Drehzahl über 120 Einh.
+EEFA Hysterese 4
+EEFC Drehzahl unter 116 Einh.?
+EEFF nein: Bit 1 belassen
+EF01 ja: Bit 1 löschen
+EF03 $8028 speichern
+EF06 Kopie von $8028 in A
+EF07 und auf den Stack
+EF08 Maske für die Prüfung des Testmodus
+EF0A Werkspatch: die Stellglieddiagnose schaltet die Pumpe ein
+table EF0D 2 tote Bytes des alten Codes (unter dem Patch verblieben)
+EF0F Kopie von $8028 entfernen
+EF10 Pumpe einschalten
+EF12 Synchronisation über G4/Hallgeber vorhanden ($8095.5)?
+EF14 prüfen
+EF17 ja: weiter
+EF19 Kopie entfernen
+EF1A keine Synchronisation: Pumpe ausschalten
+EF1C Überdrehzahl ($8028.7)?
+EF1E nein: weiter
+EF20 Fehlerbit 2214
+EF22 in den Fehlerspeicher
+EF25 schreiben
+EF28 bei Überdrehzahl wird die Pumpe ausgeschaltet
+EF2A keine Überdrehzahl: Bit 2214 löschen
+EF2C löschen
+EF2F schreiben
+EF32 Fehler des Drucksensors
+EF34 vorhanden?
+EF37 ja: kein Druckschutz, Pumpe einschalten
+EF39 B = $8028
+EF3A Codierung: PORT6.2 = 1 bedeutet Schaltgetriebe (HS)
+EF3D HS? ja: Wandlerschutz überspringen
+EF3F AT: alle drei Bits 1, 2, 3 gleichzeitig nötig (Schutz des Drehmomentwandlers [Vermutung])
+EF41 Bremse > 2 s, Druck > 154 und Drehzahl > 120 Einh. alle zusammen?
+EF43 ja: Pumpe ausschalten (Wandlerschutz AT)
+EF45 Ladedruck zu hoch ($8028.6)?
+EF47 nein: Code 2224 löschen
+EF49 Fehlerbit 2224
+EF4B in den Fehlerspeicher
+EF4E schreiben
+EF51 Ladedruck zu hoch: Pumpe ausschalten
+EF53 Ladedruck nicht zu hoch: Bit 2224 löschen
+EF55 löschen
+EF58 schreiben
+EF5B PORT6.6 = 1: Kraftstoffpumpenrelais J17 ein [Vermutung]
+EF5E weiter
+EF60 PORT6.6 = 0: J17 aus, Pumpe steht [Vermutung]
+
+head F930
+|Werkspatch zu EF0A. Läuft die Stellglieddiagnose ($80A9.7)
+|und ist $80F7.4 nicht gesetzt, wird die Pumpe ohne jede Prüfung eingeschaltet.
+|Offenbar funktioniert so der Testschritt 4433 (J17) [Vermutung].
+F930 Stellglieddiagnose läuft ($80A9.7)?
+F933 nein: normale Logik
+F935 $80F7.4 [?]
+F937 prüfen
+F93A gesetzt: normale Logik
+F93C Test: Pumpe einschalten
+F93F normale Logik
+
+# ======================================================================
+# Aufgabe 3: Druckkennzeichen und Schutz gegen zu hohen Ladedruck (ED20-EDF6)
+# ======================================================================
+head ED20
+|Druckflags in $8028 und Schutz gegen zu hohen Ladedruck.
+|  Bit 0: Druck über 128 (≈1,0 bar abs. [Vermutung]), gelöscht unter 125;
+|  Bit 4: Druck über der Kurve C2E0 über der Drehzahl (Hysterese 3);
+|  Bit 6: Ladedruck zu hoch: Druck über der Grenze C220 länger als 10 Aufrufe
+|          hintereinander (1 s), oder über der Grenze plus Zuschlag nach G42 länger als 5 Aufrufe
+|          (0,5 s) (C793 = 10, C794 = 5). Bei warmem Motor ist der Zuschlag 0, dann
+|          genügen 0,5 s. Führt zu Code 2224 und Abschaltung der Kraftstoffpumpe (EF45).
+|Drehzahlachse C210 (16 Punkte): 40 53 67 80 93 107 120 133 147 160 173 187 200 213 220 240.
+|Grenze C220: 160 173 179 198 205 205 … 205 (≈1,25 … 1,6 bar abs. [Vermutung]).
+|Kurve C2E0: 127 131 140 156 164 168 169 168 166 166 154 141 134 128 128 128.
+ED20 Druck G71
+ED23 G71 defekt unter Last?
+ED26 nein: Messwert verwenden
+ED28 ja: Ersatzwert C79E = 192
+ED2B Schwelle C789 = 128
+ED2E Druck über 128?
+ED2F nein: Bit 0 nicht setzen
+ED31 Schwelle sichern
+ED32 Bit 0
+ED34 setzen
+ED37 schreiben
+ED3A Schwelle zurückholen
+ED3B Hysterese 3: 125
+ED3D Druck über 125?
+ED3E ja: Bit 0 belassen
+ED40 nein: Bit 0 löschen
+ED42 löschen
+ED45 schreiben
+ED48 Drehzahlachse C210
+ED4B Drehzahl
+ED4E 16 Punkte
+ED50 Intervall suchen
+ED53 $8014 = Punktnummer (für die Tabellen C220 und C2E0)
+ED56 Anteil
+ED59 $8017 = Anteil
+ED5C Achse Ansauglufttemperatur C6F0 = 175 165 156 146 (fallend)
+ED5F Ansauglufttemperatur G42 (A/D-Kanal 7) [Vermutung]
+ED62 4 Punkte
+ED64 Intervall suchen
+ED67 Punktnummer auf den Stack
+ED68 Anteil
+ED6B A = Anteil
+ED6C B = Punktnummer
+ED6D Tabelle C6F4 = 26 26 26 0
+ED70 X -> Wert
+ED71 B = Anteil
+ED72 A = Zuschlag zur Grenze (26 kalt, 0 warm)
+ED75 $8016 = Zuschlag
+ED78 Grenze für zu hohen Ladedruck C220 über der Drehzahl
+ED7B A = Grenze
+ED7D Zähler „über der Grenze ohne Korrektur“
+ED80 Druck über der Grenze? Zähler + 1, sonst 0
+ED82 speichern
+ED85 Grenze + Zuschlag nach G42
+ED88 kein Überlauf? ja: weiter
+ED8A auf 255 begrenzen
+ED8C $8016 = korrigierte Grenze
+ED8F Zähler „über der korrigierten Grenze“
+ED92 Druck darüber? Zähler + 1, sonst 0
+ED94 speichern
+ED97 Kurve C2E0 über der Drehzahl
+ED9A A = Kurvenwert
+ED9C $8014 = Kurvenwert
+ED9F Flags $8028
+EDA2 Zähler ohne Korrektur
+EDA5 C793 = 10 erreicht?
+EDA8 ja: Ladedruck zu hoch
+EDAA Zähler mit Korrektur
+EDAD C794 = 5 erreicht?
+EDB0 ja: Ladedruck zu hoch
+EDB2 nein: Bit 6 löschen
+EDB6 Bit 6: Ladedruck zu hoch
+EDB8 $8028 schreiben
+EDBB Druck
+EDBE X -> Kurvenwert C2E0
+EDC1 Bit 4
+EDC3 Bit 4 aus dem Vergleich mit der Kurve (Hysterese 3)
+EDC5 weiter mit den Betriebszustandsflags
+label EDC7 TAB_RPM
+head EDC7
+|TAB_RPM: Wert der Tabelle X über der Drehzahl: Punktnummer in $8014,
+|Anteil in $8017 (beide berechnet ED48).
+EDC7 Punktnummer
+EDCA X -> Wert
+EDCB Anteil
+EDCE Interpolation
+label EDD1 FLAG8028_HYST
+head EDD1
+|FLAG8028_HYST: in $8028 die Bits der Maske B setzen, wenn A ≥ Schwelle [X],
+|löschen, wenn A < Schwelle - 3. Dazwischen nichts ändern.
+EDD1 Maske auf den Stack
+EDD2 Schwelle
+EDD4 A nicht unter der Schwelle?
+EDD5 ja: Bits setzen
+EDD7 Schwelle - 3
+EDD9 A nicht darunter?
+EDDA Maske
+EDDB ja: nichts ändern
+EDDD nein: Bits löschen
+EDDE löschen
+EDE1 schreiben
+EDE3 Maske
+EDE4 Bits setzen
+EDE7 $8028 schreiben
+EDEA Rücksprung
+label EDEB OVER_CNT
+head EDEB
+|OVER_CNT: Zähler B: + 1, wenn der Druck über A (der Grenze) liegt, sonst 0.
+|Läuft nicht über (bleibt bei 255).
+EDEB Grenze nicht unter dem Druck?
+EDEE ja: zurücksetzen
+EDF0 + 1
+EDF1 kein Überlauf? ja: Rücksprung
+EDF3 bei 255 bleiben
+EDF4 Rücksprung
+EDF5 Zähler = 0
+EDF6 Rücksprung
+
+# ======================================================================
+# Aufgabe 3: Plausibilität der Schalter F60 und F81 (EC62-ED1D)
+# ======================================================================
+head EC62
+|Prüfung der Drosselklappenschalter anhand des Drucks G71. Flags in $8093:
+|  Bit 0: F60 geschlossen (Kopie des Eingangs beim vorigen Aufruf);
+|  Bit 3: F60 defekt: zusammen mit F81 geschlossen bei Druck > 141
+|          länger als 15 Aufrufe (1,5 s). Gelöscht, wenn F60 offen,
+|          F81 geschlossen und Druck > 141 ist (Code 2121 [Vermutung]);
+|  Bit 4: Verdachtszählung für F60 läuft (Zähler $809B);
+|  Bit 1: F81 defekt: F81 geschlossen bei Druck < 77
+|          (starker Unterdruck) länger als 15 Aufrufe (Zähler $809D) (Code 2123 [Vermutung]).
+|Solange keine Synchronisation besteht oder ein G71-Fehler vorliegt, wird nicht geprüft.
+|Schwelle C7A8 = 0, daher sind zwei Prüfzweige in dieser Kalibrierung wirkungslos.
+EC62 Synchronisation vorhanden ($8095.5)?
+EC64 prüfen
+EC67 ja: prüfen
+EC69 nein: Prüfungen überspringen
+EC6C Schalterflags
+EC6F G71-Fehler
+EC71 vorhanden?
+EC74 ja: Verdacht auf F60 zurücksetzen
+EC76 zuerst Bit 0 löschen
+EC78 digitale Eingänge
+EC7B Bit 5 ist F60
+EC7D offen? ja: Bit 0 = 0
+EC7F Bit 0 = 1: F60 geschlossen
+EC81 neuer Zustand
+EC82 mit dem alten vergleichen
+EC85 hat F60 umgeschaltet?
+EC87 nein: weiter
+EC89 umgeschaltet: Verdachtszählung neu beginnen
+EC8B Zähler = 0
+EC8E Druck
+EC91 F60 geschlossen?
+EC93 nein: Zweig „F60 offen“
+EC95 Druck nicht unter C7A8 = 0: immer ja
+EC98 Sprung wird immer ausgeführt
+EC9A toter Befehl bei C7A8 = 0
+EC9C Druck sichern
+EC9D digitale Eingänge
+ECA0 Bit 4 ist F81
+ECA2 Druck zurückholen
+ECA3 F81 offen? ja: kein Verdacht
+ECA5 beide geschlossen; Druck über C7A1 = 141 (≈1,1 bar abs. [Vermutung])?
+ECA8 nein: kein Verdacht
+ECAA Zählung läuft schon?
+ECAC nein: Zählung beginnen
+ECAE Verdachtszähler
+ECB1 + 1
+ECB2 speichern
+ECB5 C7A2 = 15 (1,5 s) erreicht?
+ECB8 nein: warten
+ECBA Bit 3: F60 defekt
+ECBC Zähler zurücksetzen und schreiben
+ECBE Druck nicht unter C7A8 = 0: immer ja
+ECC1 Sprung wird immer ausgeführt
+ECC3 toter Code bei C7A8 = 0
+ECC5 toter Code
+ECC7 toter Code
+ECCA toter Code
+ECCB toter Code
+ECCE toter Code
+ECD1 toter Code
+ECD3 toter Code: wäre Bit 2 gewesen
+ECD5 toter Code
+ECD7 F60 offen; Druck unter 141?
+ECDA ja: kein Verdacht
+ECDC digitale Eingänge
+ECDF Bit 4 ist F81
+ECE1 F81 offen? ja: nichts bewiesen
+ECE3 F60 offen bei Vollast und Ladedruck (F60 in Ordnung) oder G71-Fehler: Bit 3 löschen
+ECE5 Zählung läuft nicht
+ECE7 Zähler = 0
+ECE9 Bit 4: Zählung beginnen
+ECEB Zähler = 0
+ECEC Zähler speichern
+ECEF Flags speichern
+ECF2 G71-Fehler
+ECF4 vorhanden?
+ECF7 ja: Bit 1 löschen
+ECF9 Druck
+ECFC nicht unter C7A6 = 77 (≈0,6 bar abs. [Vermutung])?
+ECFF ja: keine Prüfung von F81, Zähler = 0
+ED01 digitale Eingänge
+ED04 Bit 4 ist F81
+ED06 offen? ja: F81 in Ordnung
+ED08 F81 geschlossen bei starkem Unterdruck: Zähler
+ED0B + 1
+ED0C speichern
+ED0F 15 (1,5 s) erreicht?
+ED11 nein: warten
+ED13 Bit 1: F81 defekt
+ED15 Zähler zurücksetzen
+ED17 Bit 1 löschen
+ED19 Zähler = 0
+ED1A Zähler speichern
+ED1D Flags speichern
+
+# ======================================================================
+# Aufgabe 3 (alle 10 Ticks = 100 ms): G42-Momentaufnahme, N80, N115, Prüfung G28
+# ======================================================================
+head EA2C
+|AUFGABE 3, Anfang. Momentaufnahme der Ansauglufttemperatur $8206.
+|$8206 = G42 ($8020), wird aber nur aktualisiert, wenn der Motor 2 s ununterbrochen
+|im Leerlauf läuft (Drosselklappe geschlossen, Drehzahl unter 40 Einh.).
+|Während der Fahrt bleibt der Wert eingefroren, die Erwärmung der Ansaugung während der Fahrt wirkt sich nicht aus [Vermutung].
+|Die Momentaufnahme dient zur Wahl der Schwelle für N115 (EAE1). Beim ersten Mal wird sie sofort genommen.
+EA2C noch nie eine Momentaufnahme genommen?
+EA2F ja: jetzt nehmen
+EA31 Drosselklappe geschlossen?
+EA34 nein: Leerlaufzähler auf null
+EA36 Drehzahl
+EA39 unter 40 Einh. (≈890 U/min)?
+EA3C ja: Leerlaufzeit zählen
+EA3E kein Leerlauf: Zähler = 0
+EA41 Momentaufnahme nicht anfassen
+EA43 Leerlaufzeit
+EA46 schon 20 Aufrufe (2 s)?
+EA48 ja: Momentaufnahme aktualisieren
+EA4A + 1
+EA4B speichern
+EA4E Momentaufnahme vorerst nicht anfassen
+EA50 Ansauglufttemperatur G42
+EA53 $8206 = Momentaufnahme
+EA56 Synchronisation vorhanden ($8095.5)?
+EA58 prüfen
+EA5B ja: N80 und N115
+EA5D nein: beide überspringen
+head EA60
+|N80: Spülung des Aktivkohlebehälters. Tastverhältnis $8064 = 0…31 von 32 Schritten
+|einer langsamen PWM (Schritt 5,09 ms, Periode 163 ms, Ausgabe im OCF-Interrupt, F5FA).
+|Die ersten 255 Aufrufe (25,5 s) nach der Synchronisation wird nicht gespült (C795).
+|Danach ein 8×8-Kennfeld: Zeilen nach Druck (Achse C7B0 = 116 103 90 77 71 64 58 51),
+|Spalten nach Drehzahl (Achse C7B8 = 40 53 67 80 93 107 120 160).
+|Kennfeld C7C0 ist das normale, C800 gilt bei gesetztem $8066.1 [?]. Im Leerlauf
+|ein fester Wert C7AE = 8 (oder C845 = 4 bei gesetztem $8066.1).
+EA60 Zeitzähler seit der Synchronisation
+EA63 C795 = 255 (25,5 s) erreicht?
+EA66 ja: Spülung nach Kennfeld
+EA68 + 1
+EA69 speichern
+EA6C Tastverhältnis N80 = 0
+EA6D schreiben
+EA6F Druckachse C7B0
+EA72 8 Punkte
+EA74 Zeile und Anteil nach Druck
+EA77 Drehzahlachse C7B8
+EA7A 8 Punkte
+EA7C Spalte und Anteil nach Drehzahl; B = Zellennummer
+EA7F Kennfeld C7C0
+EA82 Lambdaflags [?]
+EA85 $8066.1?
+EA87 nein: normales Kennfeld
+EA89 ja: Kennfeld C800
+EA8C Interpolation im Kennfeld
+EA8F B = Tastverhältnis
+EA90 Drosselklappe geschlossen?
+EA93 nein: nach Kennfeld
+EA95 Leerlauf: C7AE = 8
+EA98 Lambdaflags
+EA9B $8066.1?
+EA9D nein: 8
+EA9F ja: C845 = 4
+EAA2 $8064 = Tastverhältnis N80
+head EAA5
+|N115: Absperrventil für Kraftstoffdämpfe aus dem Tank (Chip-Reg. $19 Bit 2).
+|Freigegeben 50 Aufrufe (5 s) nach der Synchronisation (C844).
+|Eingeschaltet:  Druck über 102 (96 + 6, ≈0,8 bar abs. [Vermutung])  oder
+|                Drehzahl über Schwelle + 4.
+|Ausgeschaltet:  im Leerlauf, oder Druck unter 96 und Drehzahl unter der Schwelle.
+|Drehzahlschwelle (C840…C843): 48 Einh. (≈1070 U/min), wenn die G42-Momentaufnahme ≥ 128 ist
+|(kalte Luft), sonst 58 Einh. (≈1290 U/min). Für AT und HS gleich.
+EAA5 X = $8000
+EAA8 Zeit seit der Synchronisation
+EAAA weniger als C844 = 50 (5 s)?
+EAAD ja: N115 ausschalten
+EAAF Druck
+EAB1 G71 defekt unter Last?
+EAB4 nein: Messwert
+EAB6 ja: Ersatzwert 192
+EAB9 Druck - C798 (96)
+EABC unter 96? ja: Kennzeichen löschen
+EABE nochmals - 6
+EAC0 zwischen 96 und 102? ja: Kennzeichen nicht ändern
+EAC2 über 102: $809F.0 = 1
+EAC5 weiter
+EAC7 unter 96: $809F.0 = 0
+EACA Drosselklappe geschlossen?
+EACD ja: N115 ausschalten
+EACF Druck über 102?
+EAD2 ja: N115 einschalten
+EAD4 Drehzahl
+EAD6 Schwellen Schaltgetriebe C840/C841
+EAD9 Codierung: PORT6.2 = 1 bedeutet HS
+EADC HS? ja: belassen
+EADE AT: C842/C843
+EAE1 G42-Momentaufnahme
+EAE4 128 und darüber (kalt)?
+EAE6 ja: Schwelle 48
+EAE8 nein: Schwelle 58
+EAE9 Drehzahl - Schwelle
+EAEB unter der Schwelle? ja: ausschalten
+EAED um weniger als 4 darüber?
+EAEF ja: Zustand nicht ändern
+EAF1 Bit 2 = 1: N115 ein
+EAF3 schreiben
+EAF5 Bit 2 = 0: N115 aus
+EAF7 Chipregister $19
+EAF9 Ausgang schreiben
+head EAFC
+|Prüfung der Drehzahlgeber bei (aus Sicht des Steuergeräts) stehendem Motor.
+|Solange der Chip noch nie Zähne gezählt hat ($8003.6 = 0, gesetzt von D341),
+|aber der Saugrohrdruck vom Luftdruck (beim Einschalten erfasst)
+|um 5 oder mehr 10 Aufrufe hintereinander (1 s) abweicht, dreht sich der Motor offensichtlich,
+|es fehlt aber das Drehzahlsignal. Dann: Fehler G28 und G4 ($8094 |= $F0), $8003.6 = 1
+|(die Prüfung läuft nicht mehr) und Ausstieg aus der Stellglieddiagnose (F726).
+EAFC X = $8000
+EAFF schon Zähne erkannt ($8003.6)?
+EB02 ja: keine Prüfung nötig
+EB04 Abweichungszähler
+EB07 Druck
+EB0A minus Luftdruck beim Einschalten
+EB0D Differenz positiv? ja: weiter
+EB0F Betrag
+EB10 kleiner als C78A = 5?
+EB13 ja: keine Abweichung, Zähler = 0
+EB15 + 1
+EB16 kleiner als C78B = 10 (1 s)?
+EB19 ja: Zähler speichern
+EB1B Fehler G28 und G4 (Codes 2111, 2112)
+EB1E Prüfung erledigt
+EB21 Stellglieddiagnose verlassen
+EB24 weiter
+EB26 Zähler = 0
+EB27 Zähler speichern
+
+# ======================================================================
+# Aufgabe 3: Prüfung des Drucksensors G71 (EB2A-EC5F, Patch F760-F7D3)
+# ======================================================================
+head EB2A
+|Prüfung G71. Fehlerflags in $8091:
+|  Bit 0: F60 geschlossen (eigene Kopie des Eingangs);
+|  Bit 7: Verdachtszählung läuft (Zähler $809C);
+|  Bit 6: Druck über 243 bei geschlossener Drosselklappe 10 Aufrufe lang (1 s): Sensor „hängt oben“;
+|  Bit 5: Druck unter 13 bei offener Drosselklappe 1 s lang: Sensor „hängt unten“;
+|  Bit 4: in den ersten 10 s nach dem Start hat sich der Druck nie um 13 vom Luftdruck entfernt;
+|  Bit 2: Druck hat sich vom Luftdruck entfernt (Sensor lebt);
+|  Bit 3: Prüfung der ersten 10 s abgeschlossen;
+|  Bit 1: Druck bewegt sich nicht, obwohl er sollte (siehe EC18 und Patch F760).
+|Bits 6 und 5 ergeben Code 2222, Bits 4 und 1 ergeben Code 2221 (Codebildung, F001).
+|Der Luftdruck ist $8004, erfasst beim Einschalten der Zündung.
+|In $8093 hier: Bit 7 heißt F60 hat gerade geschlossen; Bit 6 heißt Warten auf Druckabfall
+|nach dem Schließen der Drosselklappe; Bit 5 heißt Druck ist gefallen.
+EB2A G71-Flags
+EB2D zuerst Bit 0 löschen
+EB2F digitale Eingänge
+EB32 Bit 5 ist F60
+EB34 offen? ja: Bit 0 = 0
+EB36 Bit 0 = 1: F60 geschlossen
+EB38 neuer Zustand
+EB39 mit dem alten vergleichen
+EB3C hat F60 umgeschaltet?
+EB3E nein: Kennzeichen „gerade geschlossen“ löschen
+EB40 umgeschaltet: Verdachtszählung neu beginnen
+EB42 ist F60 jetzt geschlossen?
+EB44 nein: Kennzeichen löschen
+EB46 $8093.7: F60 hat gerade geschlossen
+EB48 setzen
+EB4B schreiben
+EB4D $8093.7 löschen
+EB4F löschen
+EB52 $8093 schreiben
+EB55 Druck
+EB58 F60 geschlossen?
+EB5A nein: Prüfung „hängt unten“
+EB5C Druck über C7AD = 243?
+EB5F nein: kein Verdacht
+EB61 Zählung läuft?
+EB63 nein: beginnen
+EB65 Verdachtszähler
+EB68 + 1
+EB69 speichern
+EB6C C7A3 = 10 (1 s) erreicht?
+EB6F nein: warten
+EB71 Bit 6: G71 „hängt oben“ (2222)
+EB73 Zähler = 0
+EB75 Druck normal: Bit 6 löschen
+EB77 Zählung löschen
+EB79 Druck unter C79F = 13?
+EB7C nein: kein Verdacht
+EB7E Zählung läuft?
+EB80 nein: beginnen
+EB82 Verdachtszähler
+EB85 + 1
+EB86 speichern
+EB89 10 (1 s) erreicht?
+EB8C nein: warten
+EB8E Bit 5: G71 „hängt unten“ (2222)
+EB90 Zähler = 0
+EB92 Druck normal: Bit 5 löschen
+EB94 Zählung löschen
+EB96 Zähler = 0
+EB98 Bit 7: Zählung beginnen
+EB9A Zähler = 0
+EB9B Zähler speichern
+EB9E Verdacht oder Fehler „hängt“ vorhanden (Bits 7, 6, 5)?
+EBA0 nein: weiter
+EBA2 ja: übrige G71-Prüfungen überspringen
+EBA5 Betriebszustandsflags
+EBA8 Startvorgang läuft? ja: überspringen
+EBAA Prüfung der ersten 10 s abgeschlossen?
+EBAC ja: Prüfungen während der Fahrt
+EBAE Zeitzähler
+EBB1 Wert
+EBB4 C7A4 = 100 Aufrufe (10 s) vergangen?
+EBB7 ja: Druck hat sich nie bewegt
+EBB9 Druck
+EBBC minus Luftdruck
+EBBF Differenz positiv? ja: weiter
+EBC1 Betrag
+EBC2 kleiner als C7A0 = 13?
+EBC5 nein: Druck hat sich bewegt
+EBC7 ja: weiter warten
+EBCA Bit 2: Sensor lebt
+EBCC Zähler = 0
+EBCF Bit 3: 10-s-Prüfung abgeschlossen
+EBD1 hat sich der Druck bewegt?
+EBD3 ja: kein Fehler
+EBD5 Bit 4: Druck hat sich in 10 s nicht bewegt (2221)
+EBD7 weiter
+EBDA Druck
+EBDD minus Luftdruck
+EBE0 Differenz positiv? ja: weiter
+EBE2 Betrag
+EBE3 kleiner als 13?
+EBE6 ja: Bit 4 nicht anfassen
+EBE8 Druck hat sich bewegt: Bit 4 löschen
+EBEA Drehzahl
+EBED unter 40 Einh. (≈890 U/min)?
+EBF0 ja: Prüfung beim Schließen der Drosselklappe zurücksetzen
+EBF2 F60 geschlossen?
+EBF4 nein: weiter
+EBF6 Druck
+EBF9 minus Luftdruck
+EBFC Differenz positiv? ja: weiter
+EBFE Betrag
+EBFF kleiner als 13?
+EC02 ja: Bit 1 nicht anfassen
+EC04 |Druck − Luftdruck| ≥ 13 bei geschlossener Drosselklappe (Sensor reagiert): Bit 1 löschen
+EC06 Flags $8093
+EC09 Warten auf Druckabfall?
+EC0B ja: zählen
+EC0D hat F60 gerade geschlossen?
+EC0F nein: weiter
+EC11 Warten auf Druckabfall beginnen
+EC13 schreiben
+EC16 weiter
+EC18 F60 noch geschlossen?
+EC1A nein: Warten zurücksetzen
+EC1C Wartezähler
+EC1F schon 10 (1 s)?
+EC22 ja: bereits entschieden
+EC24 Zähler
+EC27 + 1
+EC28 speichern
+EC2B 10 erreicht?
+EC2E nein: Druck ansehen
+EC30 ist der Druck innerhalb 1 s gefallen?
+EC32 prüfen
+EC35 ja: alles in Ordnung
+EC37 nein: Bit 1: Druck fällt bei geschlossener Drosselklappe nicht (2221)
+EC39 weiter
+EC3B Druck
+EC3E minus Luftdruck
+EC41 Differenz positiv? ja: weiter
+EC43 Betrag
+EC44 kleiner als 13?
+EC47 ja: warten
+EC49 Druck hat sich um 13 oder mehr vom Luftdruck entfernt
+EC4B setzen
+EC4E schreiben
+EC51 weiter
+EC53 Warten und „gefallen“ löschen
+EC55 löschen
+EC58 schreiben
+EC5B Zähler = 0
+EC5C speichern
+EC5F Werkspatch: weitere G71-Prüfungen
+
+head F760
+|Werkspatch: zwei weitere G71-Prüfungen (Bit 1 in $8091).
+|1) Vollast (F81), Drehzahl nicht unter C846 = 80 Einh. (≈1780 U/min),
+|   und der Druck weicht weniger als 13 vom Luftdruck ab, 30 Aufrufe
+|   hintereinander (3 s, C848): Bit 1.
+|2) Pumpe freigegeben, N75 aktiv ($8067/$8068 nicht null), Drehzahl ≥ 80 Einh.,
+|   und der Druck ist innerhalb 100 ms um 25 oder mehr gefallen (C847; $806D ist der Druck beim
+|   vorigen Aufruf): merken ($806E.0). Bleibt der Druck danach 6 Aufrufe
+|   hintereinander (C849) beim Luftdruck: Bit 1. Sieht nach einem abgerutschten
+|   Ladedruckschlauch aus [Vermutung].
+F760 digitale Eingänge
+F763 Bit 4 ist F81
+F765 offen? ja: Zähler 1 auf null
+F767 Drehzahl
+F769 unter C846 = 80 Einh.?
+F76C ja: Zähler 1 auf null
+F76E Druck
+F770 minus Luftdruck
+F772 Differenz positiv? ja: weiter
+F774 Betrag
+F775 nicht kleiner als 13?
+F778 ja: Druck hat sich bewegt, Zähler auf null
+F77A Zähler 1 ($8062) + 1
+F77C Wert
+F77E kleiner als C848 = 30 (3 s)?
+F781 ja: warten
+F783 Bit 1: kein Ladedruck bei Vollast
+F785 Zähler 1 = 0
+F787 leer (Füllbefehl)
+F788 leer
+F789 leer
+F78A Kraftstoffpumpe freigegeben (PORT6.6)?
+F78D nein: zurücksetzen
+F78F Ansteuerung N75, Byte 1
+F791 nicht null? ja: prüfen
+F793 Byte 2
+F795 null? ja: zurücksetzen
+F797 Drehzahl
+F799 unter 80 Einh.?
+F79C ja: zurücksetzen
+F79E Druck beim vorigen Aufruf
+F7A0 minus aktueller (Abfall innerhalb 100 ms)
+F7A2 Druck gestiegen? ja: Kennzeichen ansehen
+F7A4 Differenz kleiner als C847 = 25?
+F7A7 ja: Kennzeichen ansehen
+F7A9 merken: Druck stark gefallen
+F7AC Flags speichern
+F7AE Kennzeichen $806E.0 gesetzt?
+F7B1 nein: Zähler 2 auf null
+F7B3 Druck
+F7B5 minus Luftdruck
+F7B7 Differenz positiv? ja: weiter
+F7B9 Betrag
+F7BA nicht kleiner als 13?
+F7BD ja: Kennzeichen löschen
+F7BF Zähler 2 ($8090) + 1
+F7C1 Wert
+F7C3 kleiner als C849 = 6?
+F7C6 ja: Flags speichern
+F7C8 Bit 1: kein Ladedruck bei aktivem N75
+F7CA weiter
+F7CC Kennzeichen löschen
+F7CF Zähler 2 = 0
+F7D1 $8091 = G71-Flags
+F7D3 weiter zur Prüfung der Schalter
+
+# ======================================================================
+# Aufgabe 3: Löschen der Codes, Aufbau des Fehlerspeichers $8000-$8002 (EF63-F0EB)
+# ======================================================================
+head EF63
+|Löschen des Fehlerspeichers auf Anforderung $8092.1. Die Anforderung setzen: der Tester über die K-Leitung
+|(DC15), der Blinkcode-Ablauf nach der Ausgabe der Codes (F40D) und der Zähler der Starts ohne
+|Änderung im Fehlerspeicher (CD8D, nach einer vorgegebenen Anzahl von Starts).
+EF63 X = $8000
+EF66 Löschanforderung?
+EF69 nein: weiter
+EF6B Steuergerätefehler löschen (1111)
+EF6E Synchronisationsfehler löschen (gerade Bits)
+EF71 Fehler der Klopfsensoren löschen
+EF74 Fehler der Klopfregelung löschen
+EF77 alle Temperaturfehler und die Anforderung selbst löschen
+EF7A Klopfkennzeichen $807A löschen [?]
+EF7D Schalterfehler löschen
+EF80 Fehler der Lambdaregelung löschen (2342)
+EF83 G71-Fehler löschen
+EF86 Prüfzähler
+EF88 auf null setzen
+EF8A D = 0
+EF8B B = 0
+EF8C $8098/$8099 = 0
+EF8E $807C = 0
+EF90 $80ED/$80EE = 0
+EF92 Zähler der Schalterprüfung
+EF94 und G71
+EF96 Zähler L-Leitung
+EF98 Synchronisation vorhanden?
+EF9B ja: Zylinderzähler nicht anfassen
+EF9D nein: Zylinderzähler auf null
+EF9F Codebyte 1
+EFA1 Codebyte 2
+EFA3 Codebyte 3
+EFA5 Zähler der Starts ohne Änderung
+head EFA7
+|Einmal pro Fahrt, wenn die Drehzahl zum ersten Mal 32 Einh. erreicht
+|(≈710-770 U/min): der Motor läuft sicher, daher werden die beim Anlassen gesetzten
+|Synchronisationsfehler (2111, 2112, 2113) gelöscht.
+EFA7 schon geschehen?
+EFAA ja: weiter
+EFAC Drehzahl
+EFAE unter 32 Einh.?
+EFB0 ja: warten
+EFB2 merken: geschehen
+EFB5 Fehlerspeicher aus dem internen RAM wiederhergestellt ($8003.3)?
+EFB8 ja: auch in der Kopie löschen
+EFBA 2111-2113 in Codebyte 1 löschen
+EFBD weiter
+EFBF Interrupts sperren
+EFC0 internes RAM einschalten
+EFC3 2111-2113 in der Kopie löschen
+EFC6 Prüfsumme der Kopie neu berechnen:
+EFC8 $41
+EFCA + $42
+EFCC + $43
+EFCE + $44
+EFD0 $40 = Summe
+EFD2 internes RAM ausschalten
+EFD5 Interrupts freigeben
+EFD6 gerade Synchronisationsbits löschen
+head EFD9
+|Aufbau des Fehlerspeichers. Jedes Byte $8000-$8002 enthält 8 Codes, Bit 7 zuerst.
+|Die Reihenfolge entspricht der Blinkcode-Tabelle $C928. Bits werden nur hinzugefügt
+|(der Speicher ist „klebrig“), nur das Löschen entfernt sie. Hat sich ein Byte geändert,
+|wird der Zähler der Starts ohne Änderung $802B auf null gesetzt.
+|$8000: 7 ist 1111 Steuergerät ($8095 & $C0); 6 ist 2111 G28 ($8094.6); 5 ist 2112 G4 ($8094.4);
+|       4 ist 2113 Hallgeber ($8094.2); 3 ist 2113 ($8094.0); 2 ist 2222 G71 oben ($8091.6);
+|       1 ist 2222 G71 unten ($8091.5); 0 ist 2221 G71 bewegt sich nicht ($8091 & $12).
+|$8001: 7 ist 2142 G61 ($80B6.6); 6 ist 2144 G66 ($80B6.4); 5 ist 2141 ($8051.3);
+|       4 ist 2143 ($8051.2); 3 ist 2123 F81 ($8093.1); 2 ist 2121 F60 ($8093.3);
+|       1 ist 2121 ($8093.2, in dieser Kalibrierung nie gesetzt); 0 ist 2322 G42 ($8092.5).
+|$8002: 7 ist 2322 G42 ($8092.4); 6 ist 2312 G62 ($8092.3); 5 ist 2312 ($8092.2);
+|       4 ist 2342 Lambda ($8060.1); 3 ist 2214 Drehzahl ($809F.2);
+|       2 ist 2224 Ladedruck zu hoch ($809F.1); 1 ist 4444 „kein Fehler“; 0 ist Listenende.
+EFD9 Byte 1, alter Wert
+EFDC auf den Stack zum Vergleich
+EFDD Steuergerätefehler
+EFDF vorhanden?
+EFE2 nein
+EFE4 1111
+EFE6 Synchronisationsfehler
+EFE9 G28?
+EFEB nein
+EFED 2111
+EFEF G4?
+EFF1 nein
+EFF3 2112
+EFF5 Hallgeber?
+EFF7 nein
+EFF9 2113
+EFFB Hallgeber, zweites Kennzeichen?
+EFFD nein
+EFFF 2113
+F001 G71-Fehler
+F004 „oben“?
+F006 nein
+F008 2222
+F00A „unten“?
+F00C nein
+F00E 2222
+F010 „bewegt sich nicht“?
+F012 nein
+F014 2221
+F016 Byte 1 schreiben
+F019 alter Wert
+F01A geändert?
+F01D nein
+F01F ja: Zähler der Starts ohne Änderung = 0
+F022 Byte 2, alter Wert
+F025 auf den Stack
+F026 Fehler der Klopfsensoren
+F029 G61?
+F02B nein
+F02D 2142
+F02F G66?
+F031 nein
+F033 2144
+F035 Fehler der Klopfregelung
+F038 erstes Kennzeichen?
+F03A nein
+F03C 2141
+F03E zweites?
+F040 nein
+F042 2143
+F044 Schalterfehler
+F047 F81?
+F049 nein
+F04B 2123
+F04D F60?
+F04F nein
+F051 2121
+F053 F60, zweites Kennzeichen?
+F055 nein
+F057 2121
+F059 Temperaturfehler
+F05C G42, erstes Kennzeichen?
+F05E nein
+F060 2322
+F062 Byte 2 schreiben
+F065 alter Wert
+F066 geändert?
+F069 nein
+F06B ja: Zähler = 0
+F06E Byte 3, alter Wert
+F071 auf den Stack
+F072 G42, zweites Kennzeichen?
+F074 nein
+F076 2322
+F078 G62, erstes?
+F07A nein
+F07C 2312
+F07E G62, zweites?
+F080 nein
+F082 2312
+F084 Lambdaflags
+F087 Fehler der Lambdaregelung?
+F089 nein
+F08B 2342
+F08D Flags $809F
+F090 Überdrehzahl?
+F092 nein
+F094 2214
+F096 Ladedruck zu hoch?
+F098 nein
+F09A 2224
+F09C Bit 0 ist das Listenende, immer 1
+F09E Byte 3 schreiben
+F0A1 ohne die Dienstbits 1 und 0
+F0A3 alter Wert
+F0A4 ohne die Dienstbits
+F0A6 geändert?
+F0A7 nein
+F0A9 ja: Zähler = 0
+F0AC mindestens ein Fehler in den drei Bytes?
+F0AF + Byte 2
+F0B2 ja: ohne 4444
+F0B4 kein Fehler: 4444 und Listenende
+F0B6 schreiben
+F0B9 weiter
+F0BB Fehler vorhanden: 4444 löschen
+F0BD löschen
+F0C0 schreiben
+head F0C3
+|Länger anstehende Fehler in $806E: Bit 7 ist $8092.7 [?], Bit 6 ist G71 „hängt“ ($8091 & $60),
+|Bit 5 ist G71 „bewegt sich nicht“ ($8091 & $12). Ein Bit wird gesetzt, wenn der Fehler
+|40 Aufrufe hintereinander (4 s) ansteht, und sofort gelöscht. Zähler $806F-$8071.
+F0C3 erstes Maskenbit
+F0C5 erster Zähler
+F0C8 $8092.7 [?]
+F0CA vorhanden?
+F0CD nein: löschen
+F0CF steht an: zählen
+F0D1 weiter
+F0D3 löschen
+F0D5 G71 „hängt“?
+F0D7 prüfen
+F0DA nein: löschen
+F0DC steht an: zählen
+F0DE weiter
+F0E0 löschen
+F0E2 G71 „bewegt sich nicht“?
+F0E4 prüfen
+F0E7 nein: löschen
+F0E9 steht an: zählen
+F0EB weiter
+label F0ED LONGERR_CNT
+head F0ED
+|LONGERR_CNT: Zähler [X] + 1; bei 40 Bit B in $806E setzen.
+|Dann X auf den nächsten Zähler, B auf das nächste Bit.
+F0ED Schwelle 40
+F0EF Zähler + 1
+F0F1 40 - Zähler
+F0F3 noch nicht erreicht? ja: Bit nicht setzen
+F0F5 Bit
+F0F6 setzen
+F0F9 schreiben
+label F0FB LONGERR_CLR
+head F0FB
+|LONGERR_CLR: Zähler [X] = 0, Bit B in $806E löschen.
+F0FB Zähler = 0
+F0FD Bit
+F0FE invertieren
+F0FF löschen
+F102 $806E schreiben
+F105 nächster Zähler
+F106 nächstes Bit
+F107 Rücksprung
+F108 kein G71 „bewegt sich nicht“: löschen
+head F10A
+|Druckänderungsgeschwindigkeit über 100 ms. $806D = Druck beim vorigen Aufruf.
+|$8066.7 = 1 heißt, der Druck steigt. $806B = Wert aus Tabelle C740 (steigend)
+|oder C748 (fallend) über dem Betrag der Änderung. Beide Tabellen haben die Achse 3 2 1 0,
+|Werte 3 2 1 0: praktisch ist $806B = 3 bei einer Änderung unter 3, sonst 0 [Vermutung].
+F10A Tabelle für Anstieg
+F10D Druck jetzt
+F110 Druck beim vorigen Aufruf
+F113 aktuellen merken
+F116 Änderung = jetzt - vorher
+F117 steigend? ja
+F119 fallend: Betrag
+F11A Tabelle für Abfall
+F11D Anstiegskennzeichen löschen
+F11F Interrupts sperren
+F120 löschen
+F123 weiter
+F125 Anstiegskennzeichen
+F127 Interrupts sperren
+F128 setzen
+F12B $8066 schreiben
+F12E Interrupts freigeben
+F12F 4 Punkte
+F131 Tabellenadresse
+F132 Intervall suchen
+F135 Nummer
+F136 Anteil
+F139 A = Anteil
+F13A B = Nummer
+F13B Tabellenadresse
+F13C die Werte folgen auf die Achse (+4)
+F13E X -> Wert
+F13F B = Anteil
+F140 Interpolation
+F143 $806B = Ergebnis
+
+# ======================================================================
+# Aufgabe 3: Pin 5 (L-Leitung): Einstieg in Blinkcodes und Stellglieddiagnose,
+# Testausgänge N75/N80/N115 (F146-F225)
+# ======================================================================
+head F146
+|L-Leitung (Pin 5, PORT5.6). Pin an Masse bedeutet PORT5.6 = 0 [Vermutung].
+|25 Aufrufe (2,5 s) geschlossen halten startet die Ausgabe ($80A9.7 = 1).
+|Solange der Motor noch nie gedreht hat ($8003.4 = 0), ist das die Stellglieddiagnose
+|(F24D), sonst die Ausgabe der Fehlercodes. Im Test setzt das Öffnen des Kontakts eine Anforderung,
+|und der Schritt wechselt beim nächsten Schließen von ≥ 2,5 s: das Schrittbit in $80AF wird nach rechts geschoben
+|($80 J17, $40 N7, $20 N75, $10 N17, $08 N80, $04 N115).
+|Derselbe Start kann vom Tester über die K-Leitung kommen ($80F7.3).
+F146 X = $8000
+F149 Port 5
+F14B Momentaufnahme Port 5
+F14E Ausgabeflags
+F151 Start vom Tester über die K-Leitung ($80F7.3)?
+F154 nein: Pin 5 ansehen
+F156 Anforderung des Testers löschen
+F159 Ausgabe starten
+F15B Flags $8003
+F15E hat der Motor schon gedreht oder ist der Test beendet ($8003.4)?
+F160 ja: Ausgabe beenden
+F162 Momentaufnahme Port 5
+F165 Pin 5 offen (PORT5.6 = 1)?
+F167 ja
+F169 Schließdauer
+F16C schon 25 Aufrufe (2,5 s)?
+F16E ja: starten
+F170 + 1
+F171 speichern
+F174 weiter
+F176 Ausgabe läuft schon?
+F178 ja: Schrittanforderung ansehen
+F17A Ausgabe starten ($80A9.7)
+F17C erster Testschritt ist J17
+F17E $80AF = $80
+F181 Flags schreiben
+F183 Kontakt offen: Schließdauer = 0
+F184 speichern
+F187 Ausgabe läuft?
+F189 nein: Test verlassen
+F18B läuft: nächsten Schritt anfordern ($80A9.6)
+F18D Flags schreiben
+F18F Stellglieddiagnose verlassen
+F192 weiter
+F194 Anforderung für nächsten Schritt vorhanden?
+F196 nein: weiter
+F198 Anforderung löschen
+F19A aktueller Schritt
+F19D nächster Schritt (Bit nach rechts)
+F19E ist das noch ein Stellgliedschritt (Bit $04 oder höher)?
+F1A0 ja: Schritt speichern
+F1A2 X = $8000
+F1A5 Stellglieder durchlaufen ($80F7.4)
+F1A8 Schritt $02 (Listenende, Anzeige 0000)?
+F1AA nein: Test beendet
+F1AC $80AF = neuer Schritt
+F1AF Ausgabeflags schreiben
+F1B2 weiter
+F1B4 Ausgabe beenden ($80A9.7 = 0)
+F1B6 schreiben
+F1B9 Synchronisation vorhanden (Motor läuft)?
+F1BB prüfen
+F1BE ja: Testausgänge nicht anfassen
+F1C0 Ausgabeflags
+F1C3 Ausgabe läuft?
+F1C5 ja: Testausgänge
+F1C7 nein: N75 (PORT2.6) = 0
+F1CA und N80/N115 in Ruhe
+F1CC Teiler für den Testtakt (5 Aufrufe)
+F1CF null: neuer Takt
+F1D1 - 1
+F1D2 null erreicht: neuer Takt
+F1D4 speichern
+F1D7 warten
+F1D9 Testtakt = 5 Aufrufe (0,5 s)
+F1DB speichern
+F1DE Testschritt
+F1E1 Schritt N75?
+F1E3 nein
+F1E5 N75: PORT2.6 alle 0,5 s umschalten
+F1E8 weiter
+F1EA N75 = 0
+F1ED Schritt N80 oder N115?
+F1EF nein: Ausgänge in Ruhe
+F1F1 Phase umschalten ($80A9.5)
+F1F3 speichern
+F1F6 Schritt N115?
+F1F8 ja
+F1FA Phase?
+F1FC 1: N80 aus
+F1FE Reg. $0B = 00
+F200 weiter
+F202 Reg. $0B = FF: N80 ein
+F204 Chipregister $0B (N80)
+F206 schreiben
+F209 N115 in Ruhe
+F20B N115: zuerst N80 = 0
+F20E Reg. $0B = 00 schreiben
+F211 Phase?
+F213 0: N115 aus
+F215 1: N115 ein (Bit 2 von Reg. $19)
+F217 schreiben
+F219 N80 = 0
+F21C Reg. $0B schreiben
+F21F N115 aus (Bit 2 = 0)
+F221 Chipregister $19
+F223 schreiben
+
+# ======================================================================
+# Task 3: Blinkcode-Ablaufsteuerung (F226-F46F, Patches F880-F911)
+# ======================================================================
+head F226
+|BLINKCODE-ABLAUFSTEUERUNG. Aufruf alle 100 ms. Die Lampe leuchtet bei $809F.5 = 1.
+|Ablauf (VAG): Kontakt 5 ≥ 2,5 s auf Masse legen, loslassen — es wird ein
+|Code ausgegeben: Pause, dann 4 Ziffern. Ziffer = N Blinkimpulse zu 0,5 s mit 0,5 s Abstand,
+|zwischen den Ziffern 2,5 s dunkel. Der Code wiederholt sich, bis der Kontakt erneut an Masse liegt.
+|Das nächste Masselegen liefert den nächsten Code. Am Ende der Liste steht 0000.
+|Fehlercode-Modus ($80A9.4 = 0): Bits $8000-$8002, Codes aus $C928.
+|Stellglieddiagnose-Modus ($80A9.4 = 1, Motor hat nicht gedreht): Schrittbit $80AF,
+|Codes aus $C958.
+|Zellen: $80A0.7 — Ausgabe läuft; $80A0.6 — Code wird ausgegeben; $80A0.5 — Pause
+|vor den Ziffern abgelaufen; $80A0.4 — Ziffern laufen; $80A0 Bits 3-0 — welche Ziffern
+|ausgegeben sind; $80A1 — Bitmaske, $80A2 — Codenummer; $80A3 — verbleibende Blinkimpulse
+|der Ziffer; $80A4 — Timer (Aufrufe); $80A5/$80A6 — Code, wird um 4 Bit geschoben;
+|$80A7/$80A8 — ganzer Code für die Wiederholung; $809F.6 — Kontakt 5 an Masse;
+|$809F.4 — nächster Code gewählt; $809F.7 — Liste zu Ende.
+F226 Sitzung mit Tester über die K-Leitung ($80F6.3)?
+F229 prüfen
+F22B ja — Blinkcodes aus
+F22D Abbild von Port 5
+F230 Flags $8003
+F233 hat der Motor gedreht ($8003.4)?
+F235 nein — Stellglieddiagnose
+F237 Fehlercode-Modus ($80A9.4 = 0)
+F239 löschen
+F23C schreiben
+F23F Bitquelle — $8000
+F242 Zeiger speichern
+F245 Fehlercodetabelle
+F248 Zeiger speichern
+F24B weiter
+F24D Stellglieddiagnose-Modus ($80A9.4 = 1)
+F24F setzen
+F252 schreiben
+F255 Quelle — Schrittbit $80AF
+F258 Zeiger speichern
+F25B Tabelle der Testcodes
+F25E Zeiger speichern
+F261 Flags $809F
+F264 zu Kontakt 5 ohne Drehzahlprüfung
+F266 Flags $8003
+F269 Fehlerspeicher wiederhergestellt und noch nicht bestätigt ($8003.3)?
+F26B ja — Blinkcodes aus
+F26D Werkspatch: Prüfung von Drehzahl und Testeranforderung
+F270 Drehzahl über C7A7 = 80 Einh. (≈1780 U/min)?
+F273 nein — weiterarbeiten
+F275 X = $8000
+F278 „Liste zu Ende“ und „Kontakt an Masse“ löschen
+F27B $8003.1 löschen [?]
+F27E $80A0 = 0: keine Ausgabe
+F280 nichts
+F281 zur Lampe (über den Patch)
+F284 Flags $809F
+F287 Liste zu Ende?
+F289 ja — nur Lampe
+F28B Kontakt 5 offen?
+F28D ja
+F28F Kontakt an Masse; beim letzten Aufruf auch?
+F291 nein — Zählung beginnen
+F293 Massezeit
+F296 + 1
+F297 kein Überlauf? ja
+F299 bei 255 stehen bleiben
+F29A speichern
+F29D X = $8000
+F2A0 nur „Ausgabe läuft“ behalten
+F2A3 „nächster Code gewählt“ löschen
+F2A5 $809F schreiben
+F2A7 Merker „Code wird ausgegeben“ in $80A9.3 löschen
+F2AA die Lampe leuchtet, solange der Kontakt an Masse liegt
+F2AD merken: Kontakt an Masse
+F2AF Massezeit ab null
+F2B0 speichern
+F2B2 Kontakt offen: Merker löschen
+F2B4 schreiben
+F2B7 Ausgabezustand
+F2BA Ausgabe läuft bereits?
+F2BC ja
+F2BE Massezeit
+F2C1 kleiner als 25 (2,5 s)?
+F2C3 ja — nichts tun
+F2C5 Ausgabe starten
+F2C7 schreiben
+F2CA Codenummer = 0
+F2CB schreiben
+F2CE Maske = Bit 7
+F2D0 schreiben
+F2D3 Zeiger auf die Bits
+F2D6 erstes Byte
+F2D8 nicht leer? ja — Code suchen
+F2DA leer — mit dem zweiten Byte beginnen
+F2DC Nummer 8
+F2DF zweites Byte ($8001)
+F2E2 nicht leer? ja — suchen
+F2E4 mit dem dritten Byte beginnen
+F2E6 Nummer 16
+F2E9 Code suchen
+F2EB Ausgabezustand
+F2EE Code wird ausgegeben?
+F2F0 nein — Code wählen
+F2F2 Pause vor den Ziffern abgelaufen?
+F2F4 nein — Pause abzählen
+F2F6 ja — Ziffern
+F2F9 Timer - 1
+F2FC null erreicht?
+F2FE nein — Lampe aus
+F301 Pause abgelaufen
+F303 schreiben
+F306 Timer 25 (2,5 s)
+F308 über den Patch
+F30B Codenummer
+F30E nächster Code gewählt ($809F.4)?
+F310 prüfen
+F313 ja — Pause abzählen
+F315 über den Patch
+F318 Timer 25 oder mehr?
+F31A nein — zur Pause
+F31C Zeiger auf die Bits
+F31F Nummer / 8 = Byte
+F321 Byte gefunden
+F323 nächstes Byte
+F324 weiter
+F326 Codenummer
+F329 Maske
+F32C ab dem nächsten Bit suchen
+F32E Zeiger auf die Bits
+F331 Nummer / 8 = Byte
+F333 Byte gefunden
+F335 nächstes Byte
+F336 weiter
+F338 Codenummer
+F33B Maske
+F33E ist dieses Bit gesetzt?
+F340 ja — Code gefunden
+F342 Nummer + 1
+F343 Maske nach rechts
+F344 noch Bits im Byte? ja
+F346 Testmodus?
+F348 prüfen
+F34B nein — nächstes Byte
+F34D Test: Nummer = 0
+F34E weiter
+F350 nächstes Byte
+F351 hinter $8002?
+F354 ja — Liste zu Ende
+F356 Maske = Bit 7
+F358 suchen
+F35A Maske merken
+F35D Nummer merken
+F360 nächster Code gewählt
+F362 setzen
+F365 schreiben
+F368 Pause vor dem Code 6 (0,6 s)
+F36A Timer schreiben
+F36D Timer läuft noch?
+F370 nein — Code holen
+F372 - 1
+F375 Lampe aus
+F377 Nummer * 2
+F378 Codetabelle
+F37B X -> Code
+F37C Code (4 BCD-Ziffern)
+F37E $80A5 = Code
+F381 über den Patch: Code merken
+F384 Pause 25 (2,5 s)
+F386 Timer schreiben
+F389 Code wird ausgegeben
+F38B setzen
+F38E schreiben
+F391 zur Lampe (an)
+F393 Ziffern laufen?
+F395 ja
+F397 Pausentimer - 1
+F39A null nicht erreicht — Lampe aus
+F39C Code
+F39F Code 0000 (Ende)?
+F3A1 Ziffern starten
+F3A3 schreiben
+F3A6 erste Ziffer nach $80A3
+F3A8 weiter
+F3AA Liste zu Ende
+F3AC setzen
+F3AF schreiben
+F3B2 $80A0 = 0
+F3B3 schreiben
+F3B6 Timer
+F3B9 Lampe aus
+F3BC alle 4 Ziffern ausgegeben?
+F3BE nein
+F3C0 zweite?
+F3C2 nein
+F3C4 dritte?
+F3C6 nein
+F3C8 vierte?
+F3CA ja — Pause nach dem Code
+F3CC Timer - 1
+F3CF null nicht erreicht — fortsetzen
+F3D1 nächste Blinkphase
+F3D3 zur Lampe
+F3D6 Timer - 1
+F3D9 null nicht erreicht — Lampe aus
+F3DB nur „Ausgabe läuft“ behalten
+F3DD löschen
+F3E0 schreiben
+F3E3 derselbe Code
+F3E6 wiederholen
+F3E9 Codewiederholung
+F3EB Lampe an ($809F.5)
+F3ED setzen
+F3F0 schreiben
+F3F3 zur Lampe
+F3F5 X = $8000
+F3F8 Testmodus?
+F3FB ja
+F3FD Fehlercodes bis zum Ende ausgegeben ($802C.7)
+F400 $8003.1 [?]
+F403 0000 wiederholen
+F405 Test: wurden die Codes vorher bis zum Ende ausgegeben?
+F408 nein
+F40A Merker löschen
+F40D Anforderung zum Löschen des Fehlerspeichers [Vermutung]
+F410 0000 wiederholen
+label F412 NEXT_DIGIT
+head F412
+|NEXT_DIGIT — höchstwertige Ziffer des Codes holen: $80A3 = obere 4 Bit von $80A5,
+|der Code wird um 4 Bit nach links geschoben.
+F412 $80A3 = 0
+F415 Code
+F418 4 Schiebungen
+F41B höchstes Bit des Codes
+F41C nach $80A3
+F41F Zähler
+F420 noch? ja
+F422 Code ohne die Ziffer
+F425 Rücksprung
+label F426 BLINK_STEP
+head F426
+|BLINK_STEP — nächste Phase: Blinkimpuls 5 Aufrufe (0,5 s, Lampe an),
+|Abstand 5 Aufrufe (Lampe aus). Wenn die Blinkimpulse der Ziffer aufgebraucht sind, die
+|Ziffer als ausgegeben markieren, die nächste holen und die Lampe 25 Aufrufe (2,5 s) auslassen.
+F426 Flags
+F429 verbleibende Blinkimpulse
+F42C null — Ziffer beendet
+F42E Lampe an?
+F430 nein — einschalten
+F432 Blinkimpuls beendet: - 1
+F435 noch welche — Abstand
+F437 erste noch nicht ausgegebene Ziffer:
+F439 ist diese ausgegeben?
+F43C nein — diese ist es
+F43E nächste
+F43F weiter
+F441 als ausgegeben markieren
+F444 schreiben
+F447 war es die letzte (vierte)?
+F449 ja
+F44B Flags sichern
+F44C nächste Ziffer holen
+F44E Flags zurückholen
+F44F Pause 25
+F451 weiter
+F453 Pause 25
+F455 Lampe aus
+F457 weiter
+F459 für 5 Aufrufe einschalten
+F45B Lampe an
+F45D $809F schreiben
+F460 Timer
+F463 Rücksprung
+F464 Abstand 5 Aufrufe
+F466 ausschalten
+F468 Lampe aus ($809F.5 = 0)
+F46A löschen
+F46D schreiben
+
+head F880
+|Patch zu F281: $80A9.3 löschen und zur Lampe.
+F880 X = $8000
+F883 $80A9.3 löschen
+F886 zur Lampe
+head F8A0
+|Patch zu F381: ganzen Code merken ($80A7) und $80A9.3 setzen
+|„Code wird ausgegeben“ (danach schaltet F8B0 während der Blinkcodes den Sender der K-Leitung ab).
+F8A0 $80A7 = Code
+F8A3 X = $8000
+F8A6 Code wird ausgegeben
+F8A9 zurück
+head F8D0
+|Patch zu F308: $80A9.3 löschen; wenn $806E.3 = 0 — $806E.4 setzen [?].
+F8D0 X = $8000
+F8D3 $80A9.3 löschen
+F8D6 $806E.3?
+F8D9 gesetzt — nicht verändern
+F8DB $806E.4
+F8DE zurück
+head F8F0
+|Patch zu F315: bei $806E.3 [?] wird der nächste Code sofort gewählt.
+F8F0 $806E.3?
+F8F2 prüfen
+F8F5 nein — normaler Weg
+F8F7 Timer
+F8FA zur Codeauswahl
+F8FD normaler Weg
+head F900
+|Patch zu F26D: wenn noch keine Zähne erkannt wurden und der Test vom Tester beendet ist
+|($80F7.4) — Blinkcodes aus. Sonst Blinkcodes nur bei Drehzahl ≤ 80 Einh.
+F900 wurden schon Zähne erkannt?
+F902 ja — Drehzahl prüfen
+F904 Flags der K-Leitung
+F907 $80F7.4?
+F909 gesetzt — Blinkcodes aus
+F90B Drehzahl
+F90E Drehzahlprüfung
+F911 Blinkcodes aus
+
+# ======================================================================
+# Task 3: Lampe K66 / Kontakt 31 (F470-F549, Patches F890, F8B0)
+# ======================================================================
+head F470
+|LAMPE K66 (Kontakt 31, PORT6.4). PORT6.4 = 0 — Lampe an, 1 — Lampe aus.
+|An: bei stehendem Motor (Lampenprüfung), solange Kontakt 5 an Masse liegt, durch
+|die Blinkcode-Ablaufsteuerung, und bei warmem Motor unter Last bei Fehler des
+|Klopfsensors oder der Klopfregelung (F51D).
+|Nicht an bei Fehlern von G28/Hallgeber und Ladedruck bei Drehzahlen über 120 Einh. [?].
+|$806E: Bit 1 — Drehzahl über 120 Einh. (C7A5, Hysterese 4); Bits 2-4 —
+|besondere Lampenmodi für den Tester [?].
+F470 X = $8000
+F473 Lampenflags
+F475 zuerst Bit 2 löschen
+F477 $806E.3?
+F479 gesetzt — speichern
+F47B Kontakt 5 an Masse?
+F47E ja — Bit 4 löschen
+F480 Synchronisation vorhanden?
+F483 nein — Bit 3
+F485 Blinkcodeausgabe läuft?
+F488 ja — Patch
+F48A Liste zu Ende?
+F48D nein — Bit 3
+F48F Patch: Blinkzähler für den Tester [?]
+table F492 1 totes Byte (unter dem Patch übrig geblieben)
+F493 Zähler kleiner als 12?
+F495 nein — ab null
+F497 + 1
+F498 weiter
+F49A ab null
+F49B $80F5 = Zähler 0…12
+F49D $80F4 [?]
+F49F - 2
+F4A1 kleiner als null — ohne Bit 2
+F4A3 mit dem Zähler vergleichen
+F4A5 kleiner — ohne Bit 2
+F4A7 Bit 2
+F4A9 weiter
+F4AB Bit 3
+F4AD Bit 4 löschen
+F4AF Lampenflags schreiben
+F4B1 Lampenflags
+F4B4 Bit 4?
+F4B6 nein — normale Lampe
+F4B8 Bit 2?
+F4BA nein — ausschalten
+F4BC ja — einschalten
+F4BF Kontakt 5
+F4C1 an Masse?
+F4C3 ja — Lampe an
+F4C5 Blinkcodeausgabe läuft?
+F4C7 prüfen
+F4CA ja — Lampe durch die Blinkcode-Ablaufsteuerung
+F4CC Drehzahl
+F4CF Schwelle C7A5 = 120 Einh. (≈2700 U/min)
+F4D2 Drehzahl darunter?
+F4D3 ja — Bit 1 nicht setzen
+F4D5 speichern
+F4D6 Bit 1
+F4D8 setzen
+F4DB schreiben
+F4DE Drehzahl zurückholen
+F4DF Hysterese 4
+F4E1 Drehzahl nicht unter 116?
+F4E2 ja — Bit 1 behalten
+F4E4 Bit 1 löschen
+F4E6 löschen
+F4E9 schreiben
+F4EC Lampenflags
+F4EF Blinkcodeausgabe läuft?
+F4F1 prüfen
+F4F4 ja — Lampe nicht verändern
+F4F6 Drehzahl
+F4F9 kleiner als 1 (Motor steht)?
+F4FB ja — Lampe an
+F4FD Steuergerätefehler
+F4FF vorhanden?
+F502 ja — Lampe an
+F504 Drehzahl über 120 Einh.?
+F506 nein
+F508 Bits 5, 6?
+F50A gesetzt — Lampe an
+F50C Fehler G28/Hallgeber (Bits 0, 2)
+F50E prüfen
+F511 vorhanden — Lampe an
+F513 Druck über 128 ($8028.0)?
+F515 prüfen
+F518 nein
+F51A $806E.7 (lang anstehender Fehler $8092.7)?
+F51B ja — Lampe an
+F51D Modus $8050: warm und unter Last (Bits 6 und 5)?
+F520 invertieren
+F522 beide gesetzt?
+F524 nein — ausschalten
+F526 Fehler der Klopfsensoren
+F528 vorhanden?
+F52B ja — Lampe an
+F52D $807A.4 — Grenze der Spätverstellung durch Klopfregelung [Vermutung]
+F52F prüfen
+F532 ja — Lampe an
+F534 ausschalten: PORT6.4 = 1
+F536 schreiben
+F538 Blinkcodes: Lampe an?
+F53A prüfen
+F53D nein — ausschalten
+F53F einschalten: PORT6.4 = 0
+F540 Maske von Bit 4
+F542 Interrupts sperren
+F543 die übrigen Bits von PORT6
+F545 + Lampenbit
+F546 PORT6 schreiben
+F548 Interrupts freigeben
+F549 Patch: Sender der K-Leitung
+
+head F890
+|Patch zu F48F: bei $806E.4 — Blinkzähler, sonst Flags speichern.
+F890 Bit 4?
+F892 nein
+F894 Zähler
+F896 zum Zählen
+F899 Flags speichern
+head F8B0
+|Patch: solange ein Code per Blinkcode ausgegeben wird ($80A9.3), ist der SCI-Sender
+|abgeschaltet und P24 (TX, Kontakt 28) auf 0 gehalten. Sonst wird der Sender eingeschaltet.
+|Offenbar zeigt die K-Leitung in dieser Zeit ebenfalls den Code [Vermutung].
+F8B0 Codeausgabe läuft?
+F8B3 nein
+F8B5 SCI-Sender abschalten
+F8B8 P24 = 0
+F8BB weiter
+F8BD Sender eingeschaltet?
+F8C0 ja
+F8C2 P24 = 1
+F8C5 Sender einschalten
+F8C8 Ende von Task 3 — zum Dispatcher
+
+# ======================================================================
+# Kennfeld N80: Zeile/Spalte/Interpolation (F54C-F5A2)
+# ======================================================================
+label F54C N80_ROW
+head F54C
+|N80_ROW — Kennfeldzeile nach Druck: $8015 = Index, $8017 = Anteil.
+|Eingang: X = Druckachse, B = Anzahl der Stützstellen. Bei Fehler G71 — Ersatzwert 192.
+F54C Anzahl der Stützstellen auf den Stack
+F54D Druck
+F550 Fehler G71
+F552 prüfen
+F555 nein — Messwert
+F557 Ersatzwert C79E = 192
+F55A Anzahl der Stützstellen
+F55B Intervall suchen (Achse fallend)
+F55E $8015 = Zeilenindex
+F561 Anteil
+F564 $8017 = Anteil
+F567 Rücksprung
+label F568 N80_COL
+head F568
+|N80_COL — Spalte nach Drehzahl: $8014 = Index, $8016 = Anteil.
+|Ausgang: B = Zeile * 8 + Spalte (Zellenindex).
+F568 Drehzahl
+F56B Intervall suchen
+F56E $8014 = Spaltenindex
+F571 Anteil
+F574 $8016 = Anteil
+F577 Zeilenindex
+F57A * 8
+F57B *
+F57C *
+F57D + Spalte
+F580 Rücksprung
+label F581 MAP8X8
+head F581
+|MAP8X8 — doppelte Interpolation im 8×8-Kennfeld: zuerst nach Drehzahl in der eigenen
+|Zeile und in der nächsten, dann zwischen den Zeilen nach Druck.
+|Eingang: X = Kennfeld, B = Zellenindex. Ausgang: A.
+F581 X -> Zelle
+F582 speichern
+F583 Drehzahlanteil
+F586 Wert in der Zeile
+F589 $8014 = in der Zeile
+F58C nächste Zeile (+8)
+F58E X -> Zelle
+F58F (Adresse)
+F590 Drehzahlanteil
+F593 Wert in der nächsten Zeile
+F596 $8015
+F599 zwei aufeinanderfolgende Werte
+F59C Druckanteil
+F59F zwischen den Zeilen
+F5A2 Rücksprung
+
+# ======================================================================
+# NMI: Sichern des Fehlerspeichers bei Spannungsausfall (F5A3-F5DB)
+# ======================================================================
+head F5A3
+|NMI — löst aus, wenn die Versorgungsspannung abfällt (Zündung aus) [Vermutung].
+|Die Codebytes $8000-$8002 und die Zähler $802B, $802C werden in das interne
+|RAM des Prozessors $41-$45 kopiert, nach $40 kommt ihre Summe. Dieses RAM wird aus
+|Dauerplus (Kontakt 33) versorgt und behält die Fehler bei ausgeschalteter Zündung.
+|Beim nächsten Einschalten wird die Kopie über die Summe geprüft und zurückgeholt (D13C).
+F5A3 internes RAM bereits eingeschaltet (Arbeit mit der Kopie läuft)?
+F5A6 nein — sichern
+F5A8 ja — verlassen
+F5A9 internes RAM einschalten
+F5AC Summe = 0
+F5AD Codebyte 1
+F5B0 zur Summe
+F5B1 Kopie
+F5B3 Codebyte 2
+F5B6 zur Summe
+F5B7 Kopie
+F5B9 Codebyte 3
+F5BC zur Summe
+F5BD Kopie
+F5BF Zähler der Starts ohne Änderungen
+F5C2 zur Summe
+F5C3 Kopie
+F5C5 $802C (Bit 7 — Codes bis zum Ende ausgegeben)
+F5C8 zur Summe
+F5C9 Kopie
+F5CB $40 = Summe
+F5CD internes RAM abschalten (Schreibschutz)
+F5D0 Merker „RAM war versorgt“ = 1
+F5D3 Kopie erstellt ($8003.3)
+F5D5 setzen
+F5D8 schreiben
+F5DB Rücksprung
+
+# ======================================================================
+# TASK 0 (jeder Tick): Signal „Programm läuft“, PORT2.5, A/D-Wandler,
+# Prüfung G62/G42, Temperaturmerker (D220-D321)
+# ======================================================================
+head D220
+|TASK 0 — jeder Tick (≈10 ms).
+|1) PORT6.7 wird umgeschaltet: Signal an die externe Schaltung, dass das Programm läuft.
+|2) PORT2.5 [?] = 1 bei Drehzahl ≥ 20 Einh. (≈440-480 U/min), nur nach der Synchronisation.
+|3) Abfrage des A/D-Wandlers im Chip: Kanäle 0-5 -> $8019-$801E, 7 -> $8020. Kanal 6 (Klopfen)
+|   wird hier nicht gelesen. Kanal 4 ($801D) wird einmal gelesen — im ersten Tick nach der
+|   Synchronisation ($8075.0).
+D220 PORT6.7 umschalten: „Programm läuft“
+D223 A/D-Kanalnummer = 0
+D224 X -> $8019, erste Zelle
+D227 Synchronisation vorhanden?
+D229 prüfen
+D22C nein — PORT2.5 nicht verändern
+D22E Drehzahl
+D231 unter 20 Einh.?
+D233 nein — PORT2.5 = 1
+D235 PORT2.5 = 0
+D238 weiter
+D23A PORT2.5 = 1
+D23D nächster Kanal
+D23E nächste Zelle
+D23F Kanal 4?
+D241 nein — lesen
+D243 Synchronisation vorhanden?
+D245 prüfen
+D248 nein — Kanal 4 überspringen
+D24A Kanal 4 nach der Synchronisation schon gelesen?
+D24D prüfen
+D24F ja — überspringen
+D251 markieren: gelesen
+D253 $8075 schreiben
+D256 Kanal 6 (Klopfen)?
+D258 ja — überspringen
+D25A Chipregister $14 — A/D-Start
+D25C Interrupts sperren
+D25D Kennung „A/D-Wandler von Task 0 belegt“
+D260 Wandlung starten, Kanal = B
+D263 Interrupts freigeben
+D264 Statusregister $1F
+D266 lesen
+D268 Bit 7 = 1 — läuft noch, warten
+D26A Interrupts sperren
+D26B Kennung noch vorhanden?
+D26E nein (ein Interrupt hat den A/D-Wandler benutzt) — wiederholen
+D270 Kanal 3 (Lambda)?
+D272 nein — 8 Bit
+D274 Kanalnummer sichern
+D275 Ergebnisregister, High-Byte
+D277 auswählen
+D27A lesen
+D27D Low-Byte
+D27E auswählen
+D281 lesen
+D284 $80B3/$80B4 = volles Lambda-Ergebnis
+D287 verdoppeln (Lambda 0…1 V belegt die untere Hälfte der Skala) [Vermutung]
+D288 Interrupts freigeben
+D289 kein Überlauf? ja
+D28B auf 255 begrenzen
+D28D in die Zelle schreiben
+D28F Kanalnummer
+D290 nächster
+D292 Ergebnisregister
+D294 lesen
+D296 in die Zelle schreiben
+D298 letzte ($8020)?
+D29B nein — nächster Kanal
+head D29D
+|Signal Schubabschaltung von J142 (Kontakt 4, $801E): unter 128 — Abschaltung,
+|$8077.0 = 1. Danach N7 = 40 % (E484).
+D29D Flags
+D2A0 Abschaltung — Bit 0 = 1
+D2A2 Signal von Kontakt 4
+D2A5 unter 128?
+D2A7 ja — Abschaltung
+D2A9 nein — Bit 0 = 0
+D2AB $8077 schreiben
+head D2AE
+|Prüfung der Temperaturfühler auf Unterbrechung und Kurzschluss. Flags in $8092:
+|Bit 7 — G42 jetzt defekt; 5 — G42 unter 16 (Kurzschluss); 4 — G42 über 235 (Unterbrechung);
+|Bit 6 — G62 jetzt defekt; 3 — G62 unter 8 (Kurzschluss); 2 — G62 über 228 (Unterbrechung).
+|Ersatzwerte: G42 = 194 (−20 °C laut SSP), G62 = 30 (80 °C laut SSP).
+|Bits 5-2 sind speichernd (Löschen setzt sie zurück) — Codes 2322 und 2312.
+D2AE Temperaturflags
+D2B1 „jetzt“ löschen, speichernde behalten
+D2B3 G42
+D2B6 unter C786 = 16?
+D2B9 nein
+D2BB G42 Kurzschluss
+D2BD ersetzen
+D2BF über C785 = 235?
+D2C2 nein — in Ordnung
+D2C4 G42 Unterbrechung
+D2C6 Ersatzwert C788 = 194 (−20 °C)
+D2C9 statt des Messwerts
+D2CC G62
+D2CF unter C784 = 8?
+D2D2 nein
+D2D4 G62 Kurzschluss
+D2D6 ersetzen
+D2D8 über C783 = 228?
+D2DB nein — in Ordnung
+D2DD G62 Unterbrechung
+D2DF Ersatzwert C787 = 30 (80 °C)
+D2E2 statt des Messwerts
+D2E5 $8092 schreiben
+head D2E8
+|Temperaturmerker in $8075 nach G62 (Skala [Vermutung], siehe Legende):
+|Bit 4 — nicht über 90 (wärmer als ≈ +37 °C); Bit 3 — nicht über 169 (wärmer als ≈ +4 °C);
+|Bit 2 — nicht über 14 (heißer als ≈ 100 °C); Bit 1 — unter 44 (wärmer als ≈ 65 °C,
+|laut SSP Umschaltung auf Zündkennfeld 1), wird gelöscht, wenn der Wert 49 oder mehr wird.
+|$807B — niedrigste Temperatur (größter Wert) seit dem Einschalten.
+D2E8 Temperaturflags
+D2EB Bits 4, 3, 2 löschen
+D2ED G62 über C6BE = 90?
+D2F0 ja — Bit 4 nicht setzen
+D2F2 Bit 4
+D2F4 über C6C2 = 169?
+D2F7 ja
+D2F9 Bit 3
+D2FB über C6CA = 14?
+D2FE ja
+D300 Bit 2
+D302 unter C792 = 44?
+D305 ja — Bit 1
+D307 Hysterese 5
+D309 unter 49?
+D30C ja — nicht ändern
+D30E kälter — Bit 1 löschen
+D310 weiter
+D312 Bit 1: warm (≈65 °C)
+D314 $8075 schreiben
+D317 G62
+D31A kälter als bisher?
+D31D nein
+D31F $807B = neue niedrigste Temperatur
+
+# ======================================================================
+# Task 0: Drehzahl G28, Prüfung der Bezugsmarke G4, Atmosphärendruck (D322-D3A5)
+# ======================================================================
+head D322
+|DREHZAHL. Der Chip zählt je Tick die Zähne des Zahnkranzes (G28), Register $0C/$0D -> $8026/$8027.
+|$8018 — Drehzahl in Einh. (≈22…24 U/min je Einh. [Vermutung]). Ab 31 Einh. —
+|Zählwert des letzten Ticks direkt; unter 31 — Mittelwert über 8 Ticks (beim Anlassen
+|ist der Zählwert klein und springt). Mehr als 255 — 255.
+|$8098 sammelt Zähne zwischen G4-Marken: 540 ohne Marke — Verdacht
+|und Fehler G4 (2112). Die Marke wird vom Interrupt verarbeitet (CC83).
+D322 Register $0C — Zahnzählung, High-Byte
+D324 X -> Chip
+D327 Interrupts sperren
+D328 Register auswählen
+D32A High-Byte
+D32C Register $0D
+D32D auswählen
+D32F Low-Byte
+D331 Interrupts freigeben
+D332 $8026/$8027 = Zähne je Tick
+D335 X = $8000
+D338 Zähne vorhanden?
+D339 ja
+D33B Low-Byte
+D33C nein — es gab keine Zähne
+D33E Zähne vorhanden ($8095.3)
+D341 „Zähne schon erkannt“ ($8003.6)
+D344 Stellglieddiagnose verlassen: der Motor dreht
+D347 Zähne zwischen G4-Marken sammeln
+D34A speichern
+D34D 540 erreicht?
+D350 nein
+D352 gab es in dieser Zeit eine G4-Marke ($8095.4)?
+D354 prüfen
+D357 ja — zurücksetzen
+D359 keine Marke: Fehler G4 (2112) und Verdacht
+D35C weiter
+D35E Verdacht löschen
+D361 D = 0
+D362 (D = 0)
+D363 Zählung ab null
+D366 Merker „Marke war da“ löschen
+D369 Zähne, Low-Byte
+D36C High-Byte nicht null?
+D36F nein
+D371 mehr als 255 — 255
+D373 X = $8000
+D376 31 oder mehr?
+D378 ja — direkt übernehmen
+D37A gesammelte Ticks
+D37C schon 8?
+D37E ja — Mittelwert
+D380 Summe
+D382 speichern
+D384 Ticks + 1
+D386 $8018 vorerst nicht ändern
+D388 Summe über 8 Ticks
+D38A / 8
+D38B (/ 8)
+D38C (/ 8)
+D38D Ticks = 0
+D38F Summe = 0
+D391 $8018 = Drehzahl
+D393 Atmosphärendruck schon erfasst ($8003.5)?
+D396 ja
+D398 Druck G71 im ersten Tick nach dem Einschalten
+D39A Rest von altem Code (ändert nichts)
+D39B weiter
+table D39D 2 tote Bytes von altem Code
+D39F $8004 = Atmosphärendruck
+D3A1 erfasst
+D3A4 Atmosphärendruck
+
+# ======================================================================
+# Task 0: Kaltstartventil N17 (D3A6-D737). PORT6.5 = 0 — offen.
+# ======================================================================
+head D3A6
+|N17 — KALTSTARTVENTIL. Alle Zeiten in Ticks (≈10 ms).
+|Höhe: $802D = Stützstellenindex für den Atmosphärendruck $8004 auf der Achse C2B0
+|(128 122 109 102): 0 — auf Meereshöhe (> 122), 3 — große Höhe (≤ 102).
+|Betriebsarten (wirken erst nach der ersten Synchronisation, $8075.0):
+|1) Test 4443: 2 Ticks offen, 98 geschlossen, insgesamt 1000 Ticks (10 s).
+|2) Start des kalten Motors (kälter als ≈ +37 °C, $8075.4 = 0), bis die
+|   Verzögerung nach dem Start abgelaufen ist: Dauer nach der niedrigsten Temperatur $807B —
+|   C664 (120 50 10 0) × 10 Ticks über die Achse C660 (216 205 169 90), verringert
+|   im Verhältnis ($8079 - $801D) / $8079, wobei $8079 aus C66C (214 154 79 29) stammt.
+|   Impulse nach Höhe: offen C2B4 / geschlossen C2B8 = 255/0 (auf Meereshöhe —
+|   durchgehend), 20/5, 10/10, 5/10.
+|3) Nach dem Start (kälter als ≈ +4 °C, $8075.3 = 0): C674 (30 20 10 0) × 10 Ticks
+|   über die Achse C670 (211 205 189 169), Impulse 5 offen / 10 geschlossen.
+|4) Heißstart (heißer als ≈ 100 °C, $8075.2 = 1): 200 Ticks warten, dann
+|   10 offen / 30 geschlossen, bis 400 Ticks abgelaufen sind (C6C3, C6C5, C6C6, C6C8).
+|5) Druckanstieg (nach den Betriebsarten 2-4, Motor kälter als ≈ 65 °C, Drosselklappe nicht
+|   geschlossen): Druckzunahme in 40 ms ($8073) -> Öffnungszeit aus C678/C680,
+|   gewichtet nach Temperatur (C690 -> C694). Der zweite Ausgang ($8077.6) ist der Merker
+|   „Anreicherung erfolgt“ für das Gemisch.
+|Merker: $8075.7 — Startbetrieb läuft, .6 — Startbetrieb beendet,
+|.5 — Nachstartbetrieb beendet; $8076.7 — Ventil offen (Betriebsart 4),
+|.5 und .3 — Betriebsarten 2-4 durchlaufen. $80AA — wie viele Ticks übrig sind, $80AC — Timer
+|der Impulsphase.
+|Anmerkung: Bits 0 und 1 von $8076 (D3F5-D430) vergleichen den Höhenindex 0…3 mit
+|den Schwellen 28 und 26, werden deshalb immer gelöscht; die davon abhängigen Zweige laufen nie.
+|Nachweis (per Skript über den gesamten Code geprüft, 2026-11-18):
+| - D3F5 wird nur von D3B6 (B = Höhenindex aus AXIS_DN, 0…3) und
+|   durchlaufend von D3ED (B = 0) erreicht; D3F5-D430 wird vor jedem D475 durchlaufen;
+| - $8076 wird nur von D3FE-D42E, D447, D627, D648 geschrieben; D627/D648 schreiben A,
+|   das bei D475 aus $8076 geholt wurde, und die Bits 0/1 werden unterwegs nicht gesetzt;
+| - indizierte Schreibzugriffe mit Offset $76 und 16-Bit-Schreibzugriffe auf $8075 gibt es nirgends.
+|Bit 2 wird nur bei D63B gesetzt, das nur mit Bit 1 erreicht wird — also ebenfalls nie (siehe Kopf).
+|Der Zweig D5A8-D5B5 läuft wegen der Kalibrierung C78F = 0 nicht (in einer anderen Software evtl. doch).
+|Einzige Einschränkung: Wenn ein Tester über die K-Leitung ins RAM schreiben kann, könnte er
+|diese Bits von Hand setzen (die KW1281-Befehle sind noch nicht analysiert).
+D3A6 Achse des Atmosphärendrucks C2B0
+D3A9 4 Stützstellen
+D3AB Stützstellenindex (A = $8004)
+D3AE $802D = Höhe 0…3
+D3B1 Flags $8003
+D3B4 Motor hat gedreht oder Test beendet ($8003.4)?
+D3B6 ja — normaler Betrieb
+D3B8 Testschritt N17?
+D3BA prüfen
+D3BD nein — Zähler auf null
+D3BF Testzeit
+D3C2 1000 Ticks (10 s) vergangen?
+D3C5 ja — schließen
+D3C7 + 1
+D3C8 speichern
+D3CB Phasentimer
+D3CE null — umschalten
+D3D0 - 1
+D3D1 nicht null — warten
+D3D3 N17 umschalten
+D3D6 jetzt geschlossen?
+D3D9 nein (offen)
+D3DB 98 Ticks geschlossen
+D3DD weiter
+D3DF 2 Ticks offen
+D3E1 weiter
+D3E3 Timer = 0
+D3E4 schließen
+D3E7 Timer schreiben
+D3EA zur Klopferkennung
+D3ED D = 0
+D3EE B = 0
+D3EF Zeit = 0
+D3F2 Timer = 0
+D3F5 Schwelle 28 (wird mit dem Höhenindex 0…3 verglichen)
+D3F8 Index größer als 28? nie (siehe Kopf)
+D3F9 nein — Bit 1 nicht setzen
+D3FB speichern
+D3FC Bit 1
+D3FE setzen
+D401 schreiben
+D404 zurückholen
+D405 Schwelle - 2
+D407 Index größer? nie (siehe Kopf)
+D408 nicht löschen (wird nicht ausgeführt)
+D40A speichern
+D40B Bit 1 löschen
+D40D löschen
+D410 schreiben
+D413 zurückholen
+D414 Schwelle C78E = 26
+D417 Index größer? nie (siehe Kopf)
+D418 nein — Bit 0 nicht setzen
+D41A speichern
+D41B Bit 0
+D41D setzen
+D420 schreiben
+D423 zurückholen
+D424 Schwelle - 2
+D426 Index größer? nie (siehe Kopf)
+D427 nicht löschen (wird nicht ausgeführt)
+D429 Bit 0 löschen
+D42B löschen
+D42E schreiben
+D431 X = 0 (für Rücksetzungen)
+D434 erste Synchronisation erfolgt ($8075.0)?
+D436 prüfen
+D439 ja
+D43B nein — N17 schließen
+D43E Temperaturmerker
+D441 heißer als ≈ 100 °C?
+D443 ja — Heißstart
+D445 nicht heiß: Betriebsarten 2-4 für den Heißstart als durchlaufen ansehen
+D447 setzen
+D44A schreiben
+D44D Verzögerung nach dem Start abgelaufen ($8029.0)?
+D44F prüfen
+D452 ja — Nachstart
+D454 wärmer als ≈ +37 °C?
+D456 nein — Startbetrieb
+D458 warm, aber läuft der Startbetrieb schon?
+D459 ja — fortsetzen
+D45B schließen
+D45E lief der Startbetrieb?
+D45F nein
+D461 beenden
+D463 markieren: beendet
+D465 schreiben
+D468 Zeit = 0
+D46B Nachstartbetrieb beendet?
+D46D nein
+D46F Druckanstieg
+D472 Nachstart
+D475 Heißstart: Merker
+D478 Kopie
+D479 Bits 5 und 3
+D47B beide gesetzt?
+D47D ja — Heißstart durchlaufen, Druckanstieg
+D47F Heißstart
+D482 Startbetrieb bereits beendet?
+D484 ja — schließen
+D486 wie viel übrig ist
+D489 null — Dauer berechnen
+D48B - 1
+D48C abgelaufen
+D48E speichern
+D491 weiter
+D493 Drehzahl vorhanden, Verzögerung läuft ($8029.1)?
+D496 prüfen
+D498 nein — Startbetrieb beendet
+D49A Phasentimer - 1
+D49D null erreicht — Phase wechseln
+D49F warten
+D4A2 geschlossen?
+D4A5 ja — öffnen
+D4A7 Höhe
+D4AA Zeit „geschlossen“ C2B8
+D4AD nach Höhe
+D4AE Wert
+D4B0 Timer
+D4B3 null — nicht schließen (durchgehend)
+D4B5 schließen
+D4B7 Tabelle $8079: C66C
+D4BA Zeiger
+D4BD Achse C668
+D4C0 nach der niedrigsten Temperatur
+D4C2 $8079
+D4C5 Tabelle der Dauer C664
+D4C8 Zeiger
+D4CB Achse C660
+D4CE nach der niedrigsten Temperatur
+D4D0 × 10 Ticks -> $80AA
+D4D2 $8079
+D4D5 Kopie
+D4D6 minus $801D (A/D-Kanal 4, bei der Synchronisation erfasst) [?]
+D4D9 größer als null?
+D4DB nein — Dauer 0
+D4DC (D = 0)
+D4DD schreiben
+D4DF Anteil = Differenz / $8079
+D4E2 Dauer, Low-Byte
+D4E5 Anteil
+D4E6 × Anteil
+D4E7 runden
+D4E8 + Rundungsbit
+D4EA Low-Byte
+D4ED Anteil
+D4EE High-Byte
+D4F1 × Anteil
+D4F2 + Low-Byte
+D4F5 Übertrag
+D4F7 $80AA = Dauer
+D4FA null — Startbetrieb beendet
+D4FC Startbetrieb läuft ($8075.7)
+D4FE setzen
+D501 schreiben
+D504 Höhe
+D507 Zeit „offen“ C2B4
+D50A nach Höhe
+D50B Wert
+D50D Timer
+D510 null — nicht öffnen
+D512 öffnen
+D514 Startbetrieb beendet ($8075.6)
+D516 setzen
+D519 schreiben
+D51C Timer = 0
+D51D schreiben
+D520 schließen
+D522 zur Klopferkennung
+label D525 N17_BY_COLDEST
+head D525
+|N17_BY_COLDEST — Wert der Tabelle [$801E] für die niedrigste Temperatur
+|$807B, Achse X (4 Stützstellen). $801E ist hier eine temporäre Zelle (Tabellenadresse).
+D525 niedrigste Temperatur
+D528 4 Stützstellen
+D52A Intervall suchen
+D52D Index
+D52E Anteil
+D531 A = Anteil
+D532 B = Index
+D533 Tabellenadresse
+D536 X -> Wert
+D537 B = Anteil
+D538 Interpolation
+D53B Rücksprung
+label D53C TIMES10
+head D53C
+|TIMES10 — $80AA = A × 10 (Dauer in Ticks). Flag Z — Ergebnis null.
+D53C × 10
+D53E D = A × 10
+D53F $80AA
+D542 Rücksprung
+D543 wärmer als ≈ +4 °C?
+D545 ja — Nachstartbetrieb nicht nötig
+D547 wie viel übrig ist
+D54A null — berechnen
+D54C - 1
+D54D speichern
+D550 abgelaufen — beenden
+D552 Phasentimer - 1
+D555 nicht null — warten
+D557 N17
+D559 geschlossen?
+D55B ja — öffnen
+D55D offen: für C6C1 = 10 schließen
+D560 Timer
+D563 schließen
+D565 Nachstartbetrieb beendet ($8075.5)
+D567 setzen
+D56A schreiben
+D56D Timer = 0
+D56E schreiben
+D570 Tabelle C674
+D573 Zeiger
+D576 Achse C670
+D579 nach der niedrigsten Temperatur
+D57B × 10
+D57D null — beenden
+D57F für C6C0 = 5 öffnen
+D582 Timer
+D585 öffnen
+D588 Heißstart: Impulstimer
+D58B Impuls läuft (Bit 4)?
+D58D nein
+D58F Bit 0 (immer 0)
+D591 gesetzt —
+D593 - 1
+D594 nicht beendet
+D596 Impuls beendet
+D598 erster Teil durchlaufen (Bit 3)
+D59A Timer schreiben
+D59C erster Teil durchlaufen?
+D59E ja — Hauptteil
+D5A0 Timer
+D5A1 null
+D5A3 - 1
+D5A4 Bit 0 (immer 0)
+D5A6 gesetzt —
+D5A8 C78F = 0
+D5AB null — sofort durchlaufen (Teil abgeschaltet)
+D5AD (wird bei C78F = 0 nicht ausgeführt)
+D5B0 (wird nicht ausgeführt) Impuls starten
+D5B2 (wird nicht ausgeführt) N17 öffnen
+D5B5 (wird nicht ausgeführt)
+D5B7 Bit 6?
+D5B9 nein
+D5BB Bit 1 (immer 0)
+D5BD nein —
+D5BF Druckanstieg
+D5C2 abholen
+D5C5 kleiner als C791 = 12?
+D5C8 ja
+D5CA C790 = 0
+D5CD Impulstimer schreiben
+D5D0 Heißstart beendet (Bit 5)?
+D5D2 ja
+D5D4 wie viel übrig ist
+D5D7 null — beginnen
+D5D9 - 1
+D5DA speichern
+D5DD abgelaufen — beenden
+D5DF Phasentimer
+D5E2 null
+D5E4 - 1
+D5E5 speichern
+D5E8 Wartezeit abgelaufen (Bit 6)?
+D5EA ja — Impulse
+D5EC Wartetimer
+D5EF läuft noch — geschlossen
+D5F1 Wartezeit abgelaufen
+D5F3 Bit 1 (immer 0)?
+D5F5 (wird nicht ausgeführt)
+D5F7 Phasentimer
+D5FA null — Phase wechseln
+D5FC offen?
+D5FD nein — geschlossen
+D5FF ja — offen
+D601 Wartezeit C6C3 = 200 Ticks
+D604 Timer
+D607 speichern
+D608 Dauer C6C5 = 40
+D60B × 10 = 400 Ticks
+D60E zurückholen
+D60F null — beenden
+D611 warten
+D613 Zeiten C6C6
+D616 Bit 2 (immer 0)?
+D618 nein
+D61A (wird nicht ausgeführt) andere Zeiten
+D61B offen (Bit 7)?
+D61C ja — schließen
+D61E „offen“ C6C6 = 10
+D620 Timer
+D623 null — geschlossen
+D625 offen (Bit 7)
+D627 schreiben
+D62A N17 öffnen
+D62D weiter
+D62F Phasentimer
+D632 null — Heißstart beginnen
+D634 Heißstart beendet (Bits 5 und 3)
+D636 Timer = 0
+D639 schließen
+D63B Bit 2
+D63D (wird nicht ausgeführt)
+D63F „geschlossen“ C6C8 = 30
+D641 Timer
+D644 null — offen bleiben
+D646 Bit 7 löschen (geschlossen)
+D648 schreiben
+D64B Impuls des ersten Teils läuft (Bit 4)?
+D64D ja — nicht schließen
+D64F N17 schließen
+D652 zur Klopferkennung
+label D655 N17_RISE
+head D655
+|N17_RISE — Zeit aus der Druckzunahme: Tabelle [X + B] × Gewicht A / 128,
+|bis 255. In den ersten 500 Aufrufen von Task 1 (10 s) nach dem Start wird bei AT zusätzlich
+|mit dem Höhenfaktor $802D (4…1) multipliziert.
+D655 X -> Wert
+D656 Wert
+D658 × Gewicht
+D659 × 2
+D65A Überlauf — 255
+D65C runden
+D65D + Rundungsbit
+D65F Überlauf — 255
+D661 Motorlaufzeit
+D664 kleiner als 500 (10 s)?
+D667 Codierung: HS? (TIM ändert C nicht)
+D66A HS — ohne Faktor
+D66C 10 s vergangen — ohne Faktor
+D66E Höhenfaktor
+D671 ×
+D672 Überlauf?
+D673 ja — 255
+D675 Ergebnis
+D676 Rücksprung
+D678 255
+D67A Rücksprung
+D67B Höhenfaktor C2BC = 4 3 2 1
+D67E nach Höhe
+D681 X -> Wert
+D682 Wert
+D684 $802D = Faktor (der Höhenindex wird nicht mehr gebraucht)
+D687 warm ≈ 65 °C ($8075.1)?
+D689 prüfen
+D68C ja — N17 schließen
+D68E Drosselklappe geschlossen?
+D691 ja — N17 schließen
+D693 Kühlmitteltemperatur
+D696 Achse C690 = 205 147 100 44
+D699 heißer als die letzte Stützstelle?
+D69B nein
+D69D die letzte nehmen (44)
+D69F 4 Stützstellen
+D6A1 Intervall suchen
+D6A4 Index
+D6A5 Anteil
+D6A8 A = Anteil
+D6A9 B = Index
+D6AA Gewicht 1: C694
+D6AD X -> Wert
+D6AE Adresse und Anteil sichern
+D6B1 B = Anteil
+D6B2 Gewicht 1 = 255 154 32 0
+D6B5 Adresse
+D6B8 $801E = Gewicht 1 (vorübergehend)
+D6BB B = Anteil
+D6BC Gewicht 2: C698
+D6BF X -> Wert
+D6C0 B = Anteil
+D6C1 Gewicht 2 = 255 154 192 64
+D6C4 $801F = Gewicht 2 (vorübergehend)
+D6C7 Druckzunahme in 40 ms
+D6CA abholen
+D6CD 8 Stützstellen
+D6CF Achse der Zunahme C678 = 0 4 11 17 30 43 56 68
+D6D2 Stützstelle suchen
+D6D5 Index
+D6D6 Tabelle 2: C688 = 0 30 50 60 150 200 200 200
+D6D9 Gewicht 2
+D6DC Anreicherungsmerker für das Gemisch
+D6DF $801F
+D6E2 Index
+D6E3 Tabelle 1: C680 = 0 20 25 30 35 40 50 50
+D6E6 Gewicht 1
+D6E9 Öffnungszeit N17
+D6EC größer als der Rest?
+D6EF nein — den alten Wert zu Ende zählen
+D6F1 neue Zeit
+D6F4 null — schließen
+D6F6 N17 öffnen
+D6F9 weiter
+D6FB Timer = 0
+D6FE N17 schließen
+D701 Merker löschen
+D703 Timer - 1
+D706 nicht null — offen
+D708 N17 schließen
+D70B Anreicherungsmerker
+D70E größer als der Zähler?
+D711 nein — zu Ende zählen
+D713 neuer Wert
+D716 null — Merker löschen
+D718 Merker setzen
+D71A Zähler - 1
+D71D nicht null — Merker halten
+D71F Gemischmerker
+D722 Anreicherung ($8077.6)?
+D724 nein
+D726 löschen
+D728 schreiben
+D72B Zähler = 0
+D72E weiter
+D730 Anreicherung nach Druckanstieg ($8077.6)
+D732 setzen
+D735 schreiben
+
+# ======================================================================
+# Task 0: zylinderselektive Klopferkennung (D738-D888)
+# ======================================================================
+head D738
+|KLOPFEN: Verarbeitung der Messwerte. Für jeden der 5 Zylinder ein Datensatz zu 8 Byte
+|ab $80C0 (Zylinder N — $80C0 + 8·N):
+|  +0 Bit 7 — neuer Messwert eingetroffen (setzt der Interrupt), Bit 0 — Sensorsignal
+|     zu schwach bei höchster Verstärkung;
+|  +1 Verstärkung (1, 2, 4, 8), die der Interrupt am Verstärker einstellt;
+|  +2 Messwert (Integrator über das Klopffenster);
+|  +3 Messwert, auf den gemeinsamen Maßstab gebracht (× $80BD / 256);
+|  +4/+5 Grundgeräusch — langsamer Mittelwert der skalierten Messwerte (16 Bit);
+|  +6 geglätteter Messwert (halb alt, halb neu, C917 = 128);
+|  +7 neue Verstärkung.
+|Klopfen: skalierter Messwert ist f/32-mal größer als das Grundgeräusch, f — Tabelle C8C0
+|(5 Zeilen für die Zylinder × 16 Spalten nach Drehzahl, Achse C8B0). f = 144 bei
+|niedriger Drehzahl (4,5-fach), 80…107 bei hoher Drehzahl (2,5…3,3-fach).
+|Klopfen erkannt — Zylinderbit in $8054 (Zylinder 1 = Bit 7); das Grundgeräusch wird dann nicht
+|nachgeführt. Kein Klopfen — das Grundgeräusch nähert sich dem Messwert in Schritten von 0,5 (C915).
+|Verstärkung: Grundgeräusch über 3 × untere Grenze — Verstärkung halbiert,
+|Grundgeräusch unter der Grenze — Verstärkung verdoppelt (höchstens 8).
+D738 Maske des ersten Zylinders (Bit 7)
+D73A $80E9 = Zylindermaske
+D73D Datensatz-Offset = 0
+D73E $80E8 = Offset (8 je Zylinder)
+D741 Zylinderdatensätze
+D744 X -> Zylinderdatensatz
+D745 Flags
+D747 neuer Messwert vorhanden?
+D749 nein — zum nächsten Zylinder
+D74C „neuer Messwert“ löschen
+D74E schreiben
+D750 Messwert
+D752 nicht unter der unteren Grenze $80BA?
+D755 ja
+D757 auf die Grenze anheben
+D75A Maßstab $80BD
+D75D Messwert × Maßstab
+D75E runden
+D761 +3 = skalierter Messwert
+D763 Grundgeräusch
+D765 schon vorhanden?
+D767 erster Messwert: Grundgeräusch = Messwert
+D769 Verstärkung 8
+D76B aktuelle
+D76D neue
+D76F zum nächsten Zylinder
+D772 X sichern
+D773 Drehzahl
+D776 Drehzahlachse C8B0
+D779 16 Stützstellen
+D77B Stützstelle suchen
+D77E Schwellentabelle C8C0
+D781 + Spalte
+D782 Datensatz-Offset (8·N)
+D785 × 2 = 16·N — Zylinderzeile
+D786 X -> f
+D787 f
+D789 Offset
+D78C / 8 = Zylindernummer
+D78D (/ 8)
+D78E (/ 8)
+D78F $80EF + N
+D792 X -> Zelle
+D793 f des Zylinders merken
+D795 X zurückholen
+D796 f auf den Stack
+D797 Grundgeräusch
+D799 Grundgeräusch 64 oder mehr?
+D79B ja — Schwelle 255
+D79D Grundgeräusch × 4
+D79E (× 4)
+D79F f
+D7A0 Schwelle = Grundgeräusch × 4 × f / 256
+D7A1 runden
+D7A3 weiter
+D7A5 Schwelle 255
+D7A7 f vom Stack nehmen
+D7A8 skalierter Messwert
+D7AA / 2
+D7AB runden
+D7AD Messwert / 2 größer als die Schwelle?
+D7AE ja — Klopfen
+D7B0 Grundgeräusch
+D7B2 mit dem Messwert vergleichen
+D7B4 gleich — nicht ändern
+D7B6 Grundgeräusch größer — verringern
+D7B8 Grundgeräusch + 0,5
+D7BB kein Überlauf
+D7BD Grenze
+D7C0 weiter
+D7C2 Grundgeräusch - 0,5
+D7C5 nicht negativ geworden
+D7C7 null
+D7C8 (D = 0)
+D7C9 Grundgeräusch schreiben
+D7CB Zylindermaske
+D7CE invertieren
+D7CF Interrupts sperren
+D7D0 Klopfmerker löschen
+D7D3 weiter
+D7D5 Zylindermaske
+D7D8 Interrupts sperren
+D7D9 Klopfen in diesem Zylinder
+D7DC $8054 schreiben
+D7DF Interrupts freigeben
+D7E0 Zylinderbit
+D7E3 Sprung zum nächsten Befehl (bewirkt nichts)
+D7E5 Messwert
+D7E7 Gewicht des neuen Werts C917 = 128
+D7EA Messwert × Gewicht
+D7EB speichern
+D7EE Gewicht
+D7F1 256 - Gewicht
+D7F2 geglättet
+D7F4 × (256 - Gewicht)
+D7F5 + neu
+D7F8 +6 = geglätteter Messwert
+D7FA Verstärkung (wird unten überschrieben)
+D7FC untere Grenze
+D7FF Maßstab
+D802 Grenze × Maßstab
+D803 runden
+D806 $80BE = skalierte untere Grenze
+D809 Kopie
+D80A × 2
+D80B × 3
+D80C $80BF = 3 × Grenze
+D80F Grundgeräusch
+D811 aktuelle Verstärkung
+D813 Grundgeräusch über 3 × Grenze?
+D816 nein
+D818 Verstärkung schon 0?
+D819 ja — belassen
+D81B Verstärkung halbieren
+D81C speichern
+D81D Grundgeräusch
+D81F halbieren
+D820 schreiben
+D822 Verstärkung
+D823 weiter
+D825 Grundgeräusch über der Grenze?
+D828 ja — Verstärkung nicht ändern
+D82A Verstärkung 0?
+D82B nein
+D82D 0 -> 1
+D82E weiter
+D830 verdoppeln
+D831 Schieben
+D832 mehr als 8 geworden?
+D834 nein
+D836 8 belassen
+D838 weiter
+D83A speichern
+D83B Grundgeräusch
+D83D verdoppeln
+D83E schreiben
+D840 Verstärkung
+D841 kein Überlauf
+D843 Grenze 255
+D845 Grundgeräusch, High-Byte
+D847 +7 = neue Verstärkung
+D849 F60 defekt?
+D84B prüfen
+D84E ja — Sensor prüfen
+D850 Chipregister $19
+D852 Interrupts sperren
+D853 auswählen
+D856 lesen
+D859 Interrupts freigeben
+D85A Drosselklappe geschlossen (F60)?
+D85C ja — nicht prüfen
+D85E Drehzahl
+D861 unter 120 Einh. (≈2700 U/min)?
+D863 ja — nicht prüfen
+D865 Verstärkung
+D867 höchste (8)?
+D869 nein — nicht entscheiden
+D86B geglätteter Messwert
+D86D unter der Schwelle $80BB?
+D870 nein — Sensor in Ordnung
+D872 schwaches Signal: Bit 0
+D875 weiter
+D877 Bit 0 löschen
+D87A nächster Zylinder (Maske nach rechts)
+D87D Offset
+D880 + 8
+D882 alle 5 Zylinder?
+D884 ja — weiter
+D886 zum nächsten Zylinder
+
+# ======================================================================
+# Task 0: Diagnose KW1281 — Empfang der 5-Baud-Adresse, Blockaustausch (D889-DAFE)
+# ======================================================================
+head D889
+|EMPFANG DER 5-BAUD-ADRESSE — über die L-Leitung (Kontakt 5, PORT5.6), nicht über K!
+|Nur bei Drehzahl ≤ 80 Einh. (C7A7). Eine fallende Flanke auf der Leitung ist das Startbit:
+|30 Ticks warten (Mitte des ersten Datenbits), dann 8 Bits im Abstand von
+|20 Ticks (Bit = 200 ms), niederwertigstes zuerst, dann das Stoppbit (Leitung = 1).
+|Adresse $01 (Motor) empfangen — Sitzung eröffnen ($80F6.3).
+|Daraus ergibt sich die Ticklänge: bei 5 Baud ist ein Bit = 200 ms = 20 Ticks, also Tick ≈ 10 ms;
+|das Lesen in der Bitmitte toleriert einen Fehler von bis zu ≈ ±10 %.
+|Zellen: $80F6 — Sitzungszustand (Bit 3 offen, 2 — Pegel der L-Leitung
+|im vorigen Tick, Bits 7-4 — Phase beim Senden der Synchronbytes); $80F8 — wie viele
+|Bits übrig sind; $80F9 — Ticks bis zum nächsten Bit; $80FA — die zusammengesetzte Adresse.
+D889 X = $80F6 (Sitzungszustand)
+D88C Drehzahl
+D88F über 80 Einh. (≈1780 U/min)?
+D892 ja — Sitzung schließen
+D894 Port 5
+D896 Adressempfang läuft?
+D899 ja — Bits zählen
+D89B Leitungspegel im vorigen Tick
+D89D merken: Leitung = 1
+D8A0 L-Leitung (PORT5.6) high?
+D8A2 ja
+D8A4 merken: Leitung = 0
+D8A7 war sie im vorigen Tick 1?
+D8A9 nein — warten
+D8AB und jetzt auch 1?
+D8AD ja — keine Flanke
+D8AF fallende Flanke: 9 Bits, erstes Lesen nach 30 Ticks
+D8B2 $80F8 = 9
+D8B5 $80F9 = 30
+D8B8 weiter
+D8BA Ticks bis zum Bit - 1
+D8BD Zeit, das Bit zu lesen
+D8BF warten
+D8C1 verbleibende Bits - 1
+D8C4 alle 8 gelesen — Stoppbit
+D8C6 Bit = 1
+D8C7 Leitung high?
+D8C9 ja
+D8CB Bit = 0
+D8CC Bit in die Adresse schieben (niederwertigstes zuerst)
+D8CF nächstes Bit nach 20 Ticks (200 ms)
+D8D1 Timer
+D8D4 weiter
+D8D6 Stoppbit = 1?
+D8D8 nein — Fehler, Sitzung schließen
+D8DA empfangene Adresse
+D8DD $01 — Motor?
+D8DF nein — nicht für uns
+D8E1 Sitzung eröffnen ($80F6.3)
+D8E4 weiter
+D8E6 Sitzung geschlossen ($80F6.3 = 0)
+head D8E9
+|KW1281-SITZUNG. Nach der Adresse sendet das Steuergerät das Synchronbyte $55 (nach 29 Ticks),
+|dann die Schlüsselwörter $01 (nach 6) und $8A (nach 2). Die Baudrate legt
+|RMCR = $06 beim Reset fest [?]. Jedes Byte bestätigt der Partner mit seinem
+|invertierten Byte, außer dem letzten ($03) im Block.
+|$80F7: Bit 7 — Schlüsselwörter bestätigt; 6 — Zeit, ein Byte zu senden;
+|5 — Block des Testers wird empfangen; 1 — warten auf Bestätigung des eigenen Bytes.
+|$80FB — Pause vor dem Senden (Ticks), $80FC — letztes Byte,
+|$80FD — Antwort-Timeout (Ticks, $FF — keins), $80FE — Bytenummer im Block.
+|Block des Testers: $8104 Länge, $8100 Zähler, $8185… Titel und Daten.
+|Eigener Block: $8103 Länge, $8100+1 Zähler, $8105… Titel und Daten.
+D8E9 Sitzung offen?
+D8EC ja
+D8EE nein — Ende von Task 0
+D8F1 Sitzungszustand
+D8F4 Synchronbytes gesendet (Bit 7)?
+D8F6 wartet schon ein Byte auf das Senden?
+D8F8 ja — Pause abzählen
+D8FA Phase 0?
+D8FC nein
+D8FE Pause 29 Ticks
+D900 Synchronbyte $55
+D902 weiter
+D904 Phase 1?
+D906 nein
+D908 Pause 6 Ticks
+D90A Schlüsselwort $01
+D90C weiter
+D90E Pause 2 Ticks
+D910 Schlüsselwort $8A
+D912 $80FB = Pause
+D915 $80FC = Byte
+D918 Byte wartet auf das Senden
+D91B weiter
+D91D Pause - 1
+D920 abgelaufen
+D922 warten
+D924 Byte
+D927 an SCI senden
+D929 Interrupts sperren
+D92A Zustand
+D92D Kopie
+D92E untere Hälfte
+D930 Phase
+D932 nächste Phase
+D933 zusammensetzen
+D934 schreiben
+D937 Interrupts freigeben
+D938 nicht das letzte — nächstes Byte
+D93A auf Antwort $75 (Inversion von $8A) 22 Ticks warten
+D93C Timeout
+D93F Austauschflags
+D942 Zeit, ein Byte zu senden?
+D945 nein
+D947 ja — Senden
+D94A Byte empfangen (RDRF)?
+D94D ja — auswerten
+D94F Timeout
+D952 läuft nicht ($FF)?
+D954 ja — weiter
+D956 abgelaufen?
+D957 ja
+D959 - 1
+D95C weiter
+D95E Schlüsselwörter bestätigt?
+D961 ja
+D963 Versuche + 1
+D966 Wert
+D969 größer als 3? (vor den Schlüsselwörtern ist $80FE meist 0, also fast immer nein)
+D96B ja — Synchronbytes neu beginnen
+D96D Austausch zurücksetzen — Sitzung geschlossen (DCE6)
+D970 X = $8000
+D973 Phase der Synchronbytes auf null (die Sitzung bleibt bestehen)
+D976 Timeout = $FF
+D978 weiter
+D97A Bytenummer
+D97D Block des Testers wird empfangen?
+D980 ja
+D982 nichts gesendet?
+D983 ja — Austausch zurücksetzen
+D985 Senden wiederholen
+D988 Pause 5 Ticks
+D98A schreiben
+D98D weiter
+D98F ganzen Block empfangen?
+D992 nein
+D994 ja — Befehl auswerten
+D997 Timeout 10 Ticks
+D999 schreiben
+D99C Bytenummer = 0
+D99F schon auf Bestätigung gewartet?
+D9A2 ja — Austausch zurücksetzen
+D9A4 warten
+D9A7 weiter
+D9A9 Empfangsfehler (Überlauf/Rahmen)?
+D9AC nein
+D9AE Fehler zurücksetzen
+D9B0 Byte verwerfen
+D9B2 weiter
+D9B4 Status lesen
+D9B6 Byte
+D9B8 $80FF = empfangenes Byte
+D9BB Bestätigung erhalten
+D9BE Block des Testers wird empfangen?
+D9C1 ja — Byte speichern
+D9C3 erwartete Antwort = Inversion des eigenen Bytes
+D9C6 stimmt überein?
+D9C9 nein — weiter warten
+D9CB Schlüsselwörter schon bestätigt?
+D9CE ja
+D9D0 bestätigt
+D9D3 Pause 5 Ticks
+D9D5 schreiben
+D9D8 Bytenummer = 0
+D9DB X sichern
+D9DC erster Block — Steuergeräteidentifikation
+D9DF X zurückholen
+D9E0 Zeit zu senden
+D9E3 SCI-Empfangsinterrupt freigeben
+D9E6 zum Ende von Task 0
+D9E9 empfangenes Byte
+D9EC Bytenummer
+D9EF nicht das erste
+D9F1 erstes — Blocklänge
+D9F4 weiter
+D9F6 zweites?
+D9F8 nein
+D9FA zweites — Blockzähler
+D9FD Nummer + 1
+DA00 mit Inversion antworten
+DA03 weiter
+DA05 letztes ($03)?
+DA08 ja
+DA0A X sichern
+DA0B Nummer - 2
+DA0D Puffer für den Block des Testers $8185
+DA10 X -> Platz
+DA11 Byte speichern
+DA13 X zurückholen
+DA14 weiter
+DA16 Titel des Testerblocks
+DA19 $09 (Bestätigung)?
+DA1B ja
+DA1D sonst $8077.5 löschen [?]
+DA1F löschen
+DA22 schreiben
+DA25 letztes Byte $03?
+DA27 nein — Fehler
+DA29 Titel
+DA2C kleiner als $0B?
+DA2E ja — Nummer = Titel
+DA30 $1B?
+DA32 nein
+DA34 Nummer $0F
+DA36 weiter
+DA38 kleiner als $10?
+DA3A ja — unbekannt
+DA3C $13 oder mehr?
+DA3E ja — unbekannt
+DA40 $10-$12 -> $0B-$0D
+DA42 weiter
+DA44 unbekannter Befehl -> $0E
+DA46 × 2
+DA47 X sichern
+DA48 Befehlstabelle $DADF
+DA4B X -> Adresse
+DA4C Adresse der Behandlungsroutine
+DA4E Befehl ausführen
+DA50 Bytenummer = 0
+DA53 X zurückholen
+DA54 Blockempfang beendet
+DA57 antworten
+DA59 Pause vor dem Senden
+DA5C abgelaufen
+DA5E - 1
+DA61 zum Ende
+DA63 X sichern
+DA64 Block des Testers wird empfangen?
+DA67 nein — eigener Block
+DA69 zuletzt empfangenes Byte
+DA6C Inversion — Bestätigung
+DA6D senden
+DA6F Bytenummer
+DA72 nicht das erste
+DA74 erstes — Länge
+DA77 senden
+DA79 zweites?
+DA7B nein
+DA7D Blockzähler
+DA80 + 1
+DA81 senden
+DA83 letztes?
+DA86 nein
+DA88 Nummer = 0
+DA8B weiter den Block des Testers empfangen
+DA8E Blockende $03
+DA90 an SCI
+DA92 auf Antwort 101 Ticks warten
+DA94 weiter
+DA96 Befehl des Testers
+DA99 $0A?
+DA9B ja — aus dem Puffer
+DA9D $01 (RAM lesen)?
+DA9F ja — aus dem Speicher
+DAA1 $03 (ROM lesen)?
+DAA3 ja — aus dem Speicher
+DAA5 Datenstrom aus dem Speicher ($8101)?
+DAA8 nein — aus dem Puffer
+DAAA drittes Byte (Titel)?
+DAAC ja — aus dem Puffer
+DAAE Nummer - 3
+DAB0 Speicheradresse ($8187/$8188)
+DAB3 X -> Byte
+DAB4 Speicherbyte
+DAB6 Puffer $8106
+DAB9 X -> Platz
+DABA Kopie in den Puffer
+DABC senden
+DABE Puffer des eigenen Blocks
+DAC1 X -> Byte
+DAC2 Byte
+DAC4 an SCI
+DAC6 für die Prüfung der Antwort merken
+DAC9 Nummer + 1
+DACC auf Antwort 6 Ticks warten
+DACE X zurückholen
+DACF Timeout
+DAD2 vorheriges Byte nie bestätigt?
+DAD5 nein
+DAD7 ja — zum Ende (Austauschfehler)
+DADA warten auf Bestätigung
+DADD zum Ende
+table DADF 32 Befehlstabelle KW1281 (16 Adressen): $00 DAFF, $01 DB2A, $02 DBA9, $03 DB2A, $04 DBB5, $05 DC03, $06 DCDF, $07 DC03, $08 DC65, $09 DC90, $0A DCE5, $10 DBA9, $11 DCAC, $12 DBA9, andere DBA9, $1B DCB4
+
+# ======================================================================
+# Aufgabe 0: KW1281-Befehle (DAFF-DD02)
+# ======================================================================
+label DAFF KW_IDENT
+head DAFF
+|Befehl $00 / Beginn der Sitzung: Identifikation. 3 ASCII-Blöcke (Kopf $F6, 11 Zeichen)
+|aus $C9C3: „447905383L ", „Motor      ", dann eine Variante je nach Codierung:
+|„PMC AT/CAL.", „PMC AT/BUND", „PMC HS/CAL.", „PMC HS/BUND".
+|Der nächste Block wird auf Quittung des Testers gesendet ($09, DC90).
+DAFF Identifikationsblöcke: 3
+DB01 $8101 = verbleibend
+DB04 3
+DB06 - verbleibend = Blocknummer 0…2
+DB07 nach B
+DB08 Block 2 (Variante)?
+DB0A nein
+DB0C Codierung: PORT6.2 = 1 bedeutet HS
+DB0F AT: +0
+DB11 HS: +2
+DB12 (+2)
+DB13 Codierung: PORT5.4 = 1 bedeutet BUND
+DB16 CAL: +0
+DB18 BUND: +1
+DB19 11 Zeichen pro Zeile
+DB1B × Nummer
+DB1C Identifikationszeilen
+DB1F X -> Zeile
+DB20 Sendeadresse
+DB23 Blocklänge 14
+DB25 Kopf $F6 (ASCII)
+DB27 speichern
+label DB2A KW_READMEM
+head DB2A
+|Befehle $01 (RAM lesen) und $03 (ROM lesen). Testerblock: Byteanzahl ($8186),
+|Adresse ($8187/$8188). Erlaubt: RAM $8000-$8290; ROM nur $C000-$CA04
+|(Tabellen und Kalibrierung) und $FFE6-$FFE9 (4 Bytes vor den Vektoren). Der
+|Programmcode selbst ist nicht lesbar. Antwort in Blöcken zu 16 Bytes: Kopf $FE (RAM)
+|oder $FD (ROM); Fortsetzung auf Quittung des Testers. Verstoß ergibt „nicht verstanden".
+DB2A wie viele Bytes
+DB2D null ergibt „nicht verstanden"
+DB2F mehr als 255: kommt nie vor (belassen)
+DB31 (unmöglich: ein Byte ist nicht größer als 255)
+DB33 Adresse
+DB36 Anzahl
+DB39 - 1
+DB3A Befehl
+DB3D RAM lesen?
+DB3F ja
+DB41 ROM: Adresse unter $C000?
+DB44 ja: nicht erlaubt
+DB46 Adresse ab $FFE6?
+DB49 ja: Ende prüfen
+DB4B Ende
+DB4C über $CA04 hinaus?
+DB4F ja: nicht erlaubt
+DB51 erlaubt
+DB53 Ende
+DB54 über $FFE9 hinaus?
+DB57 ja: nicht erlaubt
+DB59 erlaubt
+DB5B RAM: unter $8000?
+DB5E ja: nicht erlaubt
+DB60 Ende
+DB61 über $8290 hinaus?
+DB64 ja: nicht erlaubt
+DB66 Befehl merken
+DB69 Byteanzahl
+DB6A noch zu senden
+DB6D Adresse
+DB70 merken
+DB73 Adresse des nächsten Stücks
+DB76 zum Senden
+DB79 verbleibend
+DB7C Stück zu 16
+DB7E mehr als 16 verbleibend?
+DB7F ja
+DB81 letztes Stück
+DB84 nichts mehr übrig
+DB87 weiter
+DB89 Stück zu 16
+DB8C verbleibend - 16
+DB8D speichern
+DB90 Adresse des nächsten Stücks
+DB91 speichern
+DB94 Befehl
+DB97 wiederherstellen
+DB9A Kopf $FE (RAM)
+DB9C RAM?
+DB9E ja
+DBA0 $FD (ROM)
+DBA2 Byteanzahl
+DBA5 + 3 = Blocklänge
+DBA7 speichern
+label DBA9 KW_NAK
+head DBA9
+|„Nicht verstanden": Block mit Kopf $0A und der Blocknummer des Testers.
+DBA9 Blocknummer
+DBAC in die Daten
+DBAF Kopf $0A
+DBB1 Länge 4
+DBB3 speichern
+label DBB5 KW_ACTTEST
+head DBB5
+|Befehl $04: Stellglieddiagnose vom Tester. Nur solange der Motor nicht gedreht hat.
+|Jeder Befehl ist der nächste Schritt (wie Öffnen von Kontakt 5). Antwort $F5 ist die
+|Stellgliednummer aus Tabelle C9AE: 01259, 01261, 01262, 01263, 01247,
+|01241, 00767 (nach Schrittbit $80AF; Zuordnung zu den Stellgliedern ist [Vermutung]).
+DBB5 X = $8000
+DBB8 Zähne schon erkannt?
+DBBB ja: nur Quittung
+DBBD Test schon beendet?
+DBC0 ja: nur Quittung
+DBC2 Schritt
+DBC5 letzter (N115)?
+DBC7 nein
+DBC9 Test beendet
+DBCC Test verlassen
+DBCF Quittung
+DBD1 Test freigeben
+DBD4 Anforderung des nächsten Schritts
+DBD6 setzen
+DBD9 speichern
+DBDC Start vom Tester
+DBDF Schritt
+DBE2 Nummer = 1
+DBE4 Schrittbit
+DBE5 gefunden
+DBE7 + 1
+DBE8 kleiner als 7?
+DBEA ja
+DBEC kein Schritt: 0
+DBED Tabelle C9AE
+DBF0 + Nummer
+DBF1 × 3
+DBF2 X -> Eintrag
+DBF3 Stellgliednummer (2 Bytes)
+DBF5 in die Daten
+DBF8 Kopf $F5
+DBFA Länge 5
+DBFC Kopf des eigenen Blocks
+DBFF Länge
+DC02 Rücksprung
+label DC03 KW_ERRORS
+head DC03
+|Befehle $05 (löschen) und $07 (Codes lesen). Solange der Fehlerspeicher nach der
+|Wiederherstellung nicht bestätigt ist ($8003.3), gibt es keine Antwort.
+|$07: für jedes Bit von $8000-$8002 (23 Codes) 3 Bytes aus C966: VAG-Nummer
+|und Kennung. Kopf $FC. Nummern: 1111 → 65535, 2111 → 00513,
+|2112 → 00514, 2113 → 00515, 2222 → 00519, 2221 → 00519, 2142 → 00524,
+|2144 → 00540, 2141 → 00535, 2143 → 00536, 2123 → 00517, 2121 → 00516,
+|2322 → 00523, 2312 → 00522, 2342 → 00525, 2214 → 00543, 2224 → 00544.
+DC03 Speicher wiederhergestellt und nicht bestätigt?
+DC05 prüfen
+DC08 nein
+DC0A ja: keine Antwort
+DC0B X = $8000
+DC0E Befehl
+DC11 $07: lesen?
+DC13 ja
+DC15 $05: Löschanforderung
+DC18 Quittung
+DC1B Datenlänge = 0
+DC1E Maske Bit 7
+DC20 Codenummer 0
+DC22 Bit gesetzt?
+DC24 nein
+DC26 sichern
+DC27 (sichern)
+DC28 (sichern)
+DC29 Tabelle C966
+DC2C + Nummer
+DC2D × 3
+DC2E X -> Eintrag
+DC2F VAG-Nummer
+DC31 zwischenspeichern
+DC34 Kennung
+DC36 Versatz im Block
+DC39 Daten
+DC3C X -> Stelle
+DC3D Kennung
+DC3F Nummer
+DC42 speichern
+DC44 Versatz
+DC47 + 3
+DC49 speichern
+DC4C zurückholen
+DC4D (zurückholen)
+DC4E (zurückholen)
+DC4F Nummer + 1
+DC50 alle 23?
+DC52 ja
+DC54 nächstes Bit
+DC55 noch im Byte
+DC57 nächstes Byte
+DC58 Maske Bit 7
+DC5A weiter
+DC5C Datenlänge
+DC5F + 3
+DC61 Kopf $FC
+DC63 speichern
+label DC65 KW_READING
+head DC65
+|Befehl $08: ein ADC-Wert. Kanalnummer 0…7 ($8186) -> Zelle $8019+N:
+|0 Saugrohrdruck, 1 Spannung, 2 G62, 3 Lambda (10 Bit, 2 Bytes), 4 $801D [?],
+|5 Abschaltsignal (J142), 6 $801F (Zwischenzelle für N17), 7 G42.
+|Antwort $FB, 2 Bytes. Über 7 ergibt „nicht verstanden".
+DC65 ADC-Zellen
+DC68 Kanalnummer
+DC6B X -> Zelle
+DC6C Wert
+DC6E Kanalnummer
+DC71 nicht über 7?
+DC73 ja
+DC75 „nicht verstanden"
+DC78 Lambda (3)?
+DC7A ja
+DC7C High-Byte = 0
+DC7D weiter
+DC7F 10 Bit Lambda
+DC82 ausrichten
+DC83 Low-Byte
+DC84 High-Byte
+DC85 zwei Bits
+DC87 in die Daten
+DC8A Kopf $FB
+DC8C Länge 5
+DC8E speichern
+label DC90 KW_ACK
+head DC90
+|Befehl $09 (Quittung): nächster Identifikationsblock, nächstes Speicherstück
+|oder eigene Quittung.
+DC90 noch Identifikationsblöcke?
+DC93 nein
+DC95 - 1
+DC96 speichern
+DC99 alle gesendet
+DC9B nächster Identifikationsblock
+DC9E noch Speicherstücke?
+DCA1 nein
+DCA3 nächstes Stück
+DCA6 Kopf $09: Quittung
+DCA8 Länge 3
+DCAA speichern
+label DCAC KW_CMD11
+head DCAC
+|Befehl $11: $8077.5 setzen [?] (wird durch jeden Testerblock außer $09 gelöscht).
+DCAC X = $8000
+DCAF $8077.5
+DCB2 Quittung
+label DCB4 KW_CMD1B
+head DCB4
+|Befehl $1B (Werk): Parameter $8186 = 9 löscht $80F7.0;
+|0, 1, 2, 4, 8 setzen $8205 = Parameter und $80F7.0 = 1 (verwendet in IRQ1, CC5E) [?].
+DCB4 X = $8000
+DCB7 Parameter
+DCBA 9?
+DCBC nein
+DCBE Modus abschalten
+DCC1 Quittung
+DCC3 0?
+DCC5 ja
+DCC7 1?
+DCC9 ja
+DCCB 2?
+DCCD ja
+DCCF 4?
+DCD1 ja
+DCD3 8?
+DCD5 nein: nur Quittung
+DCD7 $8205 = Parameter
+DCDA Modus einschalten
+DCDD Quittung
+label DCDF KW_END
+head DCDF
+|Befehl $06: Ende der Sitzung. $0A: letzten Block wiederholen (DCE5, tut nichts).
+DCDF X = $8000
+DCE2 Sitzung schließen
+DCE5 Rücksprung
+head DCE6
+|Rücksetzen des Kommunikationszustands (keine Sitzung oder Störung).
+DCE6 X = $8000
+DCE9 nur den Pegel der L-Leitung behalten
+DCEC SCI-Empfangsinterrupt freigeben
+DCEF A = 0
+DCF0 leer
+DCF1 leer
+DCF2 Blockzähler = 0
+DCF5 Bytenummer = 0
+DCF7 Identifikationsblöcke = 0
+DCFA Speicherstücke = 0
+DCFD $FF
+DCFE Timeout läuft nicht
+DD00 in $80F7 nur Bit 4 behalten
+
+# ======================================================================
+# N7: Prozent -> Timertakte (DD06)
+# ======================================================================
+label DD06 N7_TO_TICKS
+head DD06
+|N7_TO_TICKS: $805D = D × 214 / 256, wobei D = A:B das Tastverhältnis von N7 in Prozent ist
+|(A ganze Prozent, B Bruchteil). 100 % = 21400 Takte = die ganze Periode bei 71,8 Hz.
+|X zeigt auf eine Zwischenzelle.
+DD06 ganze Prozent
+DD07 214
+DD09 Bruchteil × 214
+DD0A High-Byte in die Zwischenzelle
+DD0C 214
+DD0E B = ganze Prozent
+DD0F ganze Prozent × 214
+DD10 + Bruchteil
+DD12 Übertrag
+DD14 $805D = N7-Zeit in Takten
+DD17 Rücksprung
+
+# ======================================================================
+# AUFGABE 1 (alle 2 Ticks = 20 ms): Betriebszustände $8050, Klopfparameter,
+# Prüfung der Klopfsensoren, Zündwinkel im Leerlauf (DD18-...)
+# ======================================================================
+head DD18
+|AUFGABE 1: alle 2 Ticks (≈20 ms).
+|Zustandsbits $8050:
+|  5 betriebswarm: G62 unter C6DE = 39 (≈70 °C [Vermutung]; laut SSP arbeitet die Klopfregelung ab 70 °C),
+|      gelöscht ab 42;
+|  6 Last: Saugrohrdruck über C6DF = 90 (≈0,7 bar abs. [Vermutung]), gelöscht unter 87;
+|  4 Spannung in Ordnung: gesetzt bei 95…149, gelöscht unter 90 oder ab 155;
+|  7 Klopfregelung aktiv: betriebswarm und Last, kein Start,
+|      Drosselklappe nicht geschlossen, keine Blinkcode-Ausgabe.
+DD18 Warmlaufschwelle C6DE = 39
+DD1B Kühlmitteltemperatur
+DD1E wärmer als die Schwelle?
+DD1F nein
+DD21 sichern
+DD22 Bit 5: betriebswarm
+DD24 setzen
+DD27 speichern
+DD2A zurückholen
+DD2B Hysterese 3
+DD2D kälter als 42?
+DD2E nein: belassen
+DD30 ja: Bit 5 löschen
+DD32 löschen
+DD35 speichern
+DD38 Saugrohrdruck
+DD3B G71 unter Last defekt?
+DD3E nein
+DD40 Ersatzwert 192
+DD43 Lastschwelle C6DF = 90
+DD46 Druck darüber?
+DD47 nein
+DD49 sichern
+DD4A Bit 6: Last
+DD4C setzen
+DD4F speichern
+DD52 zurückholen
+DD53 Hysterese 3
+DD55 Druck über 87?
+DD56 ja: belassen
+DD58 Bit 6 löschen
+DD5A löschen
+DD5D speichern
+DD60 Spannung
+DD63 unter 90?
+DD65 ja: löschen
+DD67 unter 95?
+DD69 ja: nicht ändern
+DD6B unter 150?
+DD6D ja: setzen
+DD6F unter 155?
+DD71 ja: nicht ändern
+DD73 Bit 4 löschen: Spannung außerhalb des Bereichs
+DD75 löschen
+DD78 speichern
+DD7B weiter
+DD7D Bit 4: Spannung in Ordnung
+DD7F setzen
+DD82 speichern
+DD85 Blinkcode-Liste beendet?
+DD87 prüfen
+DD8A ja: nach Betriebszustand entscheiden
+DD8C Blinkcode-Ausgabe läuft?
+DD8E prüfen
+DD91 ja: keine Klopfregelung
+DD93 Zustandsflags
+DD96 Start: keine Regelung
+DD98 Drosselklappe geschlossen?
+DD9B ja: keine Regelung
+DD9D Betriebszustand
+DDA0 Kopie
+DDA1 Bits 6, 5 invertieren
+DDA3 betriebswarm und Last?
+DDA5 nein: keine Regelung
+DDA7 Bit 7: Klopfregelung aktiv
+DDA9 weiter
+DDAB Bit 7 löschen
+DDAD $8050 speichern
+head DDB0
+|Klopfparameter nach Drehzahl (ohne Interpolation, nächstniedriger Punkt
+|der Achse C850 = 10 14 20 30 50 70 90 110 130 150 170 190 210 230 250 255):
+|$80B7/$80B8: Messfenster (C860, C870) [Vermutung]; $80BA: untere Messgrenze
+|(C880); $80BB: Schwelle „Sensor stumm" (C890 = 5); $80BD: Skalierung (C8A0).
+DDB0 Drehzahl
+DDB3 Achse C850
+DDB6 16 Punkte
+DDB8 Punkt suchen
+DDBB C860
+DDBD C870
+DDBF $80B7/$80B8
+DDC2 C880
+DDC4 $80BA: untere Grenze
+DDC7 C890
+DDC9 $80BB: Schwelle „stumm"
+DDCC C8A0
+DDCE $80BD: Skalierung
+DDD1 Drehzahlachse C210
+DDD4 Drehzahl
+DDD7 16 Punkte
+DDD9 Intervall suchen
+DDDC $800C = Nummer
+DDDF Bruchteil
+DDE2 $800D = Bruchteil
+DDE5 Nummer
+DDE8 Tabelle C230 (11 … 80)
+DDEB X -> Wert
+DDEC Bruchteil
+DDEF Interpolation
+DDF2 $804F [?]
+DDF5 Nummer
+DDF8 Tabelle C240 (16 … 100)
+DDFB X -> Wert
+DDFC Bruchteil
+DDFF Interpolation
+DE02 $804E [?]
+head DE05
+|Prüfung der Klopfsensoren. Zylinder 1-2 an G61, 3-5 an G66 (Tabelle C914,
+|C910-C913: 0 = G61, FF = G66; stimmt mit dem Stromlaufplan überein). Haben alle Zylinder
+|einer Gruppe die Kennung „Sensor stumm", wird gezählt; 150 Aufrufe in Folge (3 s) ergeben einen Fehler:
+|G61 setzt $80B6 Bits 7 und 6 (2142), G66 Bits 5 und 4 (2144). Bits 3/2: Gruppe
+|wurde geprüft.
+DE05 Gruppentabelle
+DE08 Zeiger
+DE0B Eintrag des ersten Zylinders
+DE0E Zeiger
+DE11 Gruppe von Zylinder 1 (C914)
+DE14 Kennung G61 = 1
+DE16 Kennung G66 = 1
+DE17 Gruppe G66?
+DE19 ja
+DE1B Zylindereintrag
+DE1E UND „stumm" in Gruppe G61
+DE20 sichern
+DE21 Gruppe G61 wurde geprüft
+DE23 weiter
+DE25 Zylindereintrag
+DE28 UND „stumm“ in Gruppe G66
+DE2A sichern
+DE2B Gruppe G66 wurde geprüft
+DE2D setzen
+DE30 speichern
+DE33 zurückholen
+DE34 sichern
+DE35 nächster Eintrag (+8)
+DE37 X
+DE38 zurückholen
+DE39 speichern
+DE3C Gruppenzeiger
+DE3F letzter Zylinder?
+DE42 ja
+DE44 nächster
+DE45 speichern
+DE48 zum nächsten Zylinder
+DE4A sichern
+DE4B G61 geprüft?
+DE4E prüfen
+DE50 ja
+DE52 nein — Merker G61 = 0
+DE53 (A = 0)
+DE54 (sichern)
+DE55 G66 geprüft?
+DE58 prüfen
+DE5A ja
+DE5C nein — Merker G66 = 0
+DE5D Merker G61
+DE5E stumm?
+DE5F nein
+DE61 Zähler G61
+DE64 150 (3 s)?
+DE66 ja — Fehler
+DE68 + 1
+DE69 speichern
+DE6C weiter
+DE6E G61 defekt (2142)
+DE70 setzen
+DE73 speichern
+DE76 weiter
+DE78 Zähler = 0
+DE7B „aktuell“ löschen
+DE7D löschen
+DE80 speichern
+DE83 G66 stumm?
+DE84 nein
+DE86 Zähler G66
+DE89 150?
+DE8B ja — Fehler
+DE8D + 1
+DE8E speichern
+DE91 weiter
+DE93 G66 defekt (2144)
+DE95 setzen
+DE98 speichern
+DE9B weiter
+DE9D Zähler = 0
+DEA0 „aktuell“ löschen
+DEA2 löschen
+DEA5 speichern
+head DEA8
+|ZÜNDUNG: Betriebsartwahl. $8088.2 = Drosselklappe geschlossen (Kopie von F60).
+|Start — fester Zündwinkel C6CB (E081). Drosselklappe offen — Kennfeld (DFC6).
+|Leerlauf — Zündwinkel nach Höhe und Temperatur ($800F, Tabelle C2D0) + DLS.
+DEA8 Digitaleingänge
+DEAB X = $8000
+DEAE F60 geschlossen?
+DEB0 nein
+DEB2 $8088.2 = 1
+DEB5 weiter
+DEB7 $8088.2 = 0
+DEBA Startzündwinkel C6CB
+DEBD Betriebsartmerker
+DEC0 kein Start
+DEC2 Start — Zündwinkel C6CB
+DEC5 Drosselklappe geschlossen?
+DEC8 ja — Leerlauf
+DECA nein — Zündkennfeld
+head DECD
+|Leerlauf: Zündwinkelkorrektur $800F nach Höhe und Kühlmitteltemperatur —
+|Tabelle C2D0 4×4 (Zeile — Höhe 0…3, Spalte — G62 auf Achse C2CC = 197 189 180 158).
+|Werte 0…8, größer bei Kälte und auf Meereshöhe.
+|Winkeleinheit [Vermutung]: Wert v -> $8022 = (v + 40) × 0,75 - 30 Halbzähne
+|(1 Halbzahn = 1,333°), also 1 Einh. ≈ 1°. Größeres v — spätere Zündung.
+DECD Luftdruck
+DED0 Achse C2B0
+DED3 4 Stützstellen
+DED5 Höhenindex
+DED8 × 4
+DEDA Tabellenzeile
+DEDB sichern
+DEDE Temperaturachse C2CC
+DEE1 G62
+DEE4 4 Stützstellen
+DEE6 Intervall suchen
+DEE9 Index
+DEEA Anteil
+DEED A = Anteil
+DEEE B = Index
+DEEF + Zeile
+DEF2 Tabelle C2D0
+DEF5 X -> Wert
+DEF6 B = Anteil
+DEF7 Interpolation
+DEFA $800F = Leerlaufkorrektur
+DEFD Drehzahl
+DF00 unter 40 Einh. (≈890 U/min)?
+DF03 ja — DLS
+DF05 Leerlauf über 890 U/min: Achse C250 / Zündwinkel C260
+DF08 16 Stützstellen
+DF0A Zündwinkel = 45 48 50 52 55 55 55 52 50 45 40 35 30 24 20 20
+DF0C zur Umrechnung (ohne Korrektur $800F)
+head DF0E
+|DLS — Leerlaufstabilisierung über den Zündwinkel unter 40 Einh. (≈890 U/min).
+|Schwellen AT C6D0 / HS C6D3 = 16 28 30 Einh. (identisch):
+|  unter 16 (≈350 U/min) — Startzündwinkel C6CB = 50;
+|  30 und darüber — C6D8 = 51;
+|  dazwischen, wenn der Motor angesprungen ist ($8029.6) — nach Tabelle C6D6 = 45 45 51
+|  (je niedriger die Drehzahl, desto früher die Zündung — der Motor fängt sich);
+|  sonst (noch nicht angesprungen) — C6CC = 50 unter 28, C6CD = 48 ab 28.
+|Zum Ergebnis wird die Korrektur $800F addiert.
+DF0E DLS-Tabelle C6D6
+DF11 Zeiger
+DF14 Schwellen AT
+DF17 Codierung: HS?
+DF1A nein
+DF1C Schwellen HS
+DF1F unter 16?
+DF21 nein
+DF23 Startzündwinkel 50
+DF26 weiter
+DF28 30 und darüber?
+DF2A nein
+DF2C 51
+DF2F weiter
+DF31 Motor angesprungen?
+DF33 prüfen
+DF36 ja — nach Tabelle
+DF38 unter 28?
+DF3A ja
+DF3C 48
+DF3F weiter
+DF41 50
+DF44 + Leerlaufkorrektur
+DF47 zur Zündwinkelumrechnung
+DF4A 3 Stützstellen
+DF4C Intervall suchen
+DF4F Zündwinkel nach Tabelle C6D6
+DF51 weiter
+label DF53 TAB16_RPM
+head DF53
+|TAB16_RPM — Achse X (B Stützstellen), danach die Tabelle; Wert nach Drehzahl.
+DF53 Achsadresse
+DF56 Anzahl Stützstellen
+DF59 Intervall für A suchen
+DF5C Index + Achslänge = Index in der Tabelle
+label DF5F TAB_INTERP
+head DF5F
+|TAB_INTERP — Interpolation der Tabelle [$800C] nach Index B und Anteil (A = Größe).
+DF5F Index
+DF60 Anteil
+DF63 A = Anteil
+DF64 B = Index
+DF65 Adresse
+DF68 X -> Wert
+DF69 B = Anteil
+DF6A Interpolation
+DF6D Rücksprung
+label DF6E MAP_ROW
+head DF6E
+|MAP_ROW — Kennfeldzeile nach Druck (Achse X, fallend): $800D = Index,
+|$800F = Anteil. Bei Fehler G71 wird der Ersatzwert 192 verwendet.
+DF6E Anzahl Stützstellen
+DF6F Druck
+DF72 Fehler G71
+DF74 prüfen
+DF77 keine
+DF79 Ersatzwert
+DF7C Anzahl Stützstellen
+label DF7D ROW_DN
+DF7D Intervall suchen
+DF80 $800D = Zeile
+DF83 Anteil
+DF86 $800F = Anteil
+DF89 Rücksprung
+label DF8A RPM_COL
+head DF8A
+|RPM_COL — Spalte nach Drehzahl (Achse X): $800C = Index, $800E = Anteil.
+|Ausgang: B = Zeile × 16 + Spalte.
+DF8A Drehzahl
+DF8D Intervall suchen
+DF90 $800C
+DF93 Anteil
+DF96 $800E
+DF99 Zeile
+DF9C × 16
+DF9D (× 16)
+DF9E (× 16)
+DF9F (× 16)
+DFA0 + Spalte
+DFA3 Rücksprung
+label DFA4 MAP16
+head DFA4
+|MAP16 — zweifache Interpolation im Kennfeld 16×16 (X = Kennfeld, B = Zelle).
+DFA4 X -> Zelle
+DFA5 sichern
+DFA6 Drehzahlanteil
+DFA9 in der eigenen Zeile
+DFAC $800C
+DFAF nächste Zeile (+16)
+DFB1 X
+DFB2 X -> Zelle
+DFB3 Drehzahlanteil
+DFB6 in der nächsten Zeile
+DFB9 $800D
+DFBC zwei Werte
+DFBF Druckanteil
+DFC2 zwischen den Zeilen
+DFC5 Rücksprung
+head DFC6
+|HAUPTZÜNDKENNFELD 16×16: Zeilen — Druck (Achse C200 = 192 … 51),
+|Spalten — Drehzahl (Achse C210). Kennfeld C000 (Kennfeld 1, für Super) — bei warmem
+|Motor ($8050.5); C100 (Kennfeld 2) — bei kaltem Motor oder bei Merker $807A.7
+|(häufiges Klopfen, dann auch $8051.5) [Vermutung nach SSP: Kennfeld 2 für niedrige Oktanzahl].
+DFC6 Druckachse C200
+DFC9 16 Stützstellen
+DFCB Zeile
+DFCD Drehzahlachse C210
+DFD0 16 Stützstellen
+DFD2 Spalte, B = Zelle
+DFD4 warm?
+DFD6 prüfen
+DFD9 nein — Kennfeld 2
+DFDB Kennfeld 1 (C000)
+DFDE $807A.7?
+DFE0 prüfen
+DFE3 nein — Kennfeld 1
+DFE5 X = $8000
+DFE8 $8051.5 markieren und Kennfeld 2 nehmen
+DFEB Kennfeld 2 (C100)
+DFEE Zündwinkel aus dem Kennfeld
+DFF0 $800C = Zündwinkel
+head DFF3
+|Zündwinkelkorrektur nach Motorlaufzeit (Tabelle C2C4 = 10 8 8 0 auf Achse C2C0 =
+|24 28 35 47 in Einheiten von 5,12 s, also ≈ 123…241 s). Die Entscheidung fällt einmal, wenn
+|$8060.0 erscheint [?]: geschah das 10-20 s oder 41-56 s nach dem Start —
+|ist die Korrektur aktiv ($807A.2), sonst — nie ($807A.1). Nur bei Drehzahl
+|unter 120 Einh. und Druck unter 128. Zweck — [?].
+DFF3 X = $8000
+DFF6 $8060.0?
+DFF9 nein — ohne Korrektur
+DFFB Merker $807A
+DFFD „nie“ entschieden?
+DFFF ja
+E001 „aktiv“ entschieden?
+E003 ja
+E005 Laufzeit, High-Byte (in Schritten von 5,12 s)
+E008 null — noch zu früh
+E00A kleiner als 2?
+E00C ja — nie
+E00E kleiner als 4?
+E010 ja — aktiv
+E012 kleiner als 8?
+E014 ja — nie
+E016 kleiner als 11?
+E018 ja — aktiv
+E01A nie ($807A.1)
+E01D weiter
+E01F aktiv ($807A.2)
+E022 Drehzahl
+E024 nicht unter C554 = 120?
+E027 ja — ohne Korrektur
+E029 Druck
+E02B Fehler G71?
+E02E keine
+E030 Ersatzwert
+E033 nicht unter C555 = 128?
+E036 ja — ohne Korrektur
+E038 Laufzeit
+E03A 4 Stützstellen
+E03C Achse C2C0
+E03F Intervall suchen
+E042 Index
+E043 Anteil
+E046 A = Anteil
+E047 B = Index
+E048 Tabelle C2C4
+E04B X -> Wert
+E04C B = Anteil
+E04D Korrektur
+E050 weiter
+E052 Korrektur 0
+E053 + Zündwinkel
+E056 Hallgeberfehler ($8094.2)?
+E058 prüfen
+E05B nein
+E05D + C557 = 4 (später)
+E060 $800C
+E063 Druck
+E066 unter 102 (≈0,8 bar abs.)?
+E068 ja — ohne Lufttemperaturkorrektur
+E06A Achse G42 C69C = 204 156 128 109
+E06D Ansauglufttemperatur
+E070 4 Stützstellen
+E072 Stützstelle (ohne Interpolation)
+E075 Tabelle C6A0 = 60 60 61 62
+E078 X -> Wert
+E079 Wert
+E07B - 60: Korrektur 0…+2 (wärmer — später)
+E07D Zündwinkel
+E080 + Korrektur
+head E081
+|Umrechnung des Zündwinkels in Halbzähne: $8022 = (Winkel + 40) × 192 / 256 - 30.
+|$800C = um wie viel der Zündwinkel gegenüber dem vorherigen früher wurde (zur Glättung).
+|Beim Start Kopie in $8023, im Leerlauf — in $808F.
+E081 + 40
+E083 × 0,75
+E085 (× 0,75)
+E086 runden
+E087 (runden)
+E089 - 30
+E08B B = neuer Zündwinkel
+E08C alter Zündwinkel
+E08F $8022 = neuer Zündwinkel (Halbzähne)
+E092 alt - neu
+E093 nicht unter null
+E095 0
+E096 $800C = Frühverstellsprung
+E099 Start?
+E09C nein
+E09E $8023 = Startzündwinkel
+E0A1 Drosselklappe geschlossen ($8088.2)?
+E0A3 prüfen
+E0A6 nein
+E0A8 $808F = Leerlaufzündwinkel
+E0AB Sprung = 0
+E0AC speichern
+E0AF Zähler $8089
+E0B2 null
+E0B4 - 1
+E0B5 speichern
+head E0B8
+|Dämpfung des Lastwechselrucks beim Öffnen der Drosselklappe nach Leerlauf — nur Schaltgetriebe (HS) [Vermutung].
+|Bedingungen: warm ($8088.4: G62 ≤ 39, gelöscht über 42), Leerlaufschalter F60 in Ordnung,
+|Motor läuft länger als 30 s ($8029.2). Drosselklappe war ≥ 25 Aufrufe (0,5 s) geschlossen —
+|„scharf“ ($8088.5). Beim Öffnen: Stärke k = (Schließzeit - 25) × 5 (bis 255),
+|nach Drehzahl (Achse C270): $8089 = C280 × k / 256 — Zuschlag zu N7 (sinkt um 1 pro
+|Aufruf), $808A = C290 × k / 256 — Spätverstellung, $808B = C2A0 — Rückführschritt des Zündwinkels
+|(wird vom Interrupt ausgeführt, CE03). $8088.7 — Funktion aktiv.
+E0B8 X = $8000
+E0BB Codierung: HS?
+E0BE AT — nicht nötig
+E0C0 G62
+E0C3 kälter als 42?
+E0C5 ja — „warm“ löschen
+E0C7 kälter als 39?
+E0C9 ja — nicht ändern
+E0CB $8088.4: warm
+E0CE weiter
+E0D0 $8088.4 löschen
+E0D3 Fehler F60
+E0D6 vorhanden?
+E0D8 ja — nicht ausführen
+E0DA warm?
+E0DD nein — nicht ausführen
+E0DF Motor läuft länger als 30 s?
+E0E2 prüfen
+E0E4 nein — nicht ausführen
+E0E6 Zeit Drosselklappe geschlossen
+E0E9 Drosselklappe geschlossen?
+E0EC nein — geöffnet
+E0EE + 1
+E0EF kein Überlauf
+E0F1 255
+E0F2 speichern
+E0F5 kleiner als 25 (0,5 s)?
+E0F7 ja — warten
+E0F9 scharf ($8088.5)
+E0FC weiter
+E0FE Zeit = 0
+E101 war scharf?
+E104 nein
+E106 Blinkcodeausgabe aktiv?
+E108 prüfen
+E10B ja — nicht ausführen
+E10D Zeit - 25
+E10F × 5
+E111 (× 5)
+E112 größer als 255?
+E113 nein
+E115 255
+E117 $800D = Stärke k
+E11A berechnen
+E11C „scharf“ löschen
+E11F „Funktion aktiv“ löschen
+E122 weiter
+E124 Drehzahl
+E127 16 Stützstellen
+E129 Achse C270
+E12C Stützstelle suchen
+E12F Tabelle C280 (Zuschlag N7)
+E132 X -> Wert
+E133 Wert
+E135 × k
+E138 (× k)
+E139 runden
+E13A (runden)
+E13C $8089 = Zuschlag zu N7
+E13F C290 (Spätverstellung)
+E141 × k
+E144 (× k)
+E145 runden
+E146 (runden)
+E148 $808A = Spätverstellung
+E14B C2A0 (Rückführschritt)
+E14D $808B
+E150 X = $8000
+E153 „scharf“ löschen
+E156 Interrupts sperren
+E157 Funktion aktiv ($8088.7, .3)
+E15A Funktion aktiv?
+E15D Interrupts freigeben
+E15E nein
+E160 Zündwinkel
+E163 + Sprung
+E166 nicht früher als Leerlaufzündwinkel?
+E169 ja
+E16B Leerlaufzündwinkel
+E16E + Spätverstellung
+E171 (+0)
+E173 $808E = anfänglicher verstellter Zündwinkel
+E176 Patch: Spätverstellung bei schnellem Gasgeben
+head F800
+|Werkspatch: Spätverstellung bei schnellem Druckanstieg mit warmem Motor
+|(G62 ≤ 63, Drosselklappe nicht geschlossen, Funktion E0B8 nicht aktiv). Druckanstieg in 40 ms
+|($8073) auf Achse F7E0 = 0 4 11 15 30 43 56 68 -> F7E8 = 0 0 0 6 6 6 6 6:
+|ein Anstieg ab 15 ergibt 6 Einh. Spätverstellung. Der größte Wert wird gespeichert ($8213), dann
+|klingt die Spätverstellung $8211 = (25 - n) × 10 × $8213 / 256 über 25 Aufrufe (0,5 s) ab.
+|$8211 wird im Interrupt (F870) zum Zündwinkel addiert.
+F800 G62
+F803 kälter als 63?
+F806 ja — zurücksetzen
+F808 Drosselklappe geschlossen?
+F80B ja — zurücksetzen
+F80D Funktion E0B8 aktiv ($808B)?
+F80F prüfen
+F812 ja — zurücksetzen
+F814 Druckanstieg
+F817 null — nur Abnahme
+F819 8 Stützstellen
+F81B Achse F7E0
+F81E Intervall suchen
+F821 Index
+F822 Anteil
+F825 A = Anteil
+F826 B = Index
+F827 Tabelle F7E8
+F82A X -> Wert
+F82B B = Anteil
+F82C Spätverstellung
+F82F null?
+F830 ja — Abnahme
+F832 größer als gespeicherter Wert?
+F835 nein
+F837 speichern
+F83A weiter
+F83C läuft Abnahme?
+F83F nein — zurücksetzen
+F841 Zähler n
+F844 + 1
+F845 schreiben
+F848 n - 25
+F84B abgelaufen — zurücksetzen
+F84D 25 - n
+F84E B = 10 (F7F2)
+F851 (25 - n) × 10
+F852 gespeicherte Spätverstellung
+F855 × Spätverstellung; High-Byte = / 256
+F856 Low-Byte ≥ 128?
+F857 nein — ohne Rundung
+F859 + 1
+F85A $8211 = Spätverstellung
+F85D weiter
+F85F Spätverstellung = 0
+F862 gespeicherter Wert = 0
+F865 A = 0
+F866 n = 0
+F869 Drehzahl
+F86C zurück
+head F870
+|Patch im Interrupt: Spätverstellung $8211 zum Zündwinkel addieren.
+F870 + Spätverstellung
+F873 $807D = Winkel
+F876 zurück
+head E179
+|$8021 = Drehzahl × 256 / 255 (≈ Drehzahl) — für die Korrektur der Zündverzögerung [?].
+|SCHLIESSWINKEL DER ZÜNDSPULE. Unter 16 Drehzahl-Einh. (oder unter 12 bis zum ersten
+|Erreichen von 16, $8092.0) — konstant $8024 = 88. Sonst Schließzeit T nach
+|Spannung: Achse C918 = 80 90 100 110 120 140 160 200 (≈8…20 V [Vermutung]) ->
+|C920 = 90 70 55 46 40 32 27 19. Schließwinkel = T × Drehzahl / 69 Halbzähne;
+|$8024 = 108 - Winkel (Beginn der Schließzeit ab Zylindermarke), mindestens 27.
+|108 Halbzähne = 144° = Abstand zwischen den Zylindern. Nach der Drehzahlskalierung
+|T ≈ 7 × Zeit in ms [Vermutung]: bei 14 V (T = 32) ≈ 4,6 ms.
+E179 255
+E17B A × 256 / 255
+E17E × 1
+E180 runden
+E181 (runden)
+E182 (runden)
+E184 $8021
+E187 Temperatur-Flags
+E18A Drehzahl
+E18D 16 und darüber?
+E18F ja — nach Spannung
+E191 unter 12?
+E193 ja — konstant
+E195 schon einmal 16 erreicht?
+E197 ja — nach Spannung
+E199 Interrupts sperren
+E19A „erreicht“ löschen
+E19C schreiben
+E19F Interrupts freigeben
+E1A0 konstant 88
+E1A2 schreiben
+E1A4 Interrupts sperren
+E1A5 „16 erreicht“ ($8092.0)
+E1A7 schreiben
+E1AA Interrupts freigeben
+E1AB Spannungsachse C918
+E1AE Spannung
+E1B1 8 Stützstellen
+E1B3 T aus Tabelle C920
+E1B6 Divisor 69
+E1B8 ganzzahliger Teil = 0
+E1BB - 69
+E1BC kleiner null — fertig
+E1BE ganzzahliger Teil + 1
+E1C1 wiederholen
+E1C3 Rest
+E1C4 Rest × 256 / 69
+E1C7 $800E = Nachkommateil von T / 69
+E1CA Drehzahl
+E1CD zwischenspeichern
+E1D0 Nachkommateil × Drehzahl
+E1D1 runden
+E1D2 (runden)
+E1D4 $800F
+E1D7 ganzzahliger Teil
+E1DA Drehzahl
+E1DD ganzzahliger Teil × Drehzahl
+E1DE + Nachkommateil
+E1E1 + Übertrag
+E1E4 Überlauf — Minimum
+E1E6 größer 255 — Minimum
+E1E8 108
+E1EA - Schließwinkel
+E1EB kleiner null — Minimum
+E1ED mindestens 27?
+E1EF ja
+E1F1 Minimum 27
+E1F3 $8024 = Beginn der Schließzeit
+head E1F6
+|Rückkehr von Kennfeld 2 auf Kennfeld 1. Wenn Kennfeld 2 aktiv ist ($807A.7) und keine
+|Fehler der Klopfregelung vorliegen ($8051 Bits 1, 0): Zähler $8086 (Aufrufe alle 20 ms).
+|Wenn sein High-Byte (Schritt 5,12 s) die drehzahlabhängige Schwelle erreicht (Achse C6E0 =
+|40 80 120 160 -> C6E4 = 12 20 27 35, also ≈ 61…179 s) und die Klopf-Spätverstellung
+|in allen Zylindern ($802F-$8033) null ist — zurück auf Kennfeld 1.
+E1F6 X = $8000
+E1F9 $807A
+E1FB Kennfeld 2 aktiv?
+E1FD nein — Zähler auf null
+E1FF Fehler der Klopfregelung?
+E202 ja — Zähler auf null
+E204 Zähler
+E206 + 1
+E207 Überlauf — nicht speichern
+E209 schreiben
+E20C Drehzahlachse C6E0
+E20F Drehzahl
+E212 4 Stützstellen
+E214 Stützstelle suchen
+E217 Schwelle C6E4
+E21A X -> Schwelle
+E21B Schwelle
+E21D hat das High-Byte des Zählers die Schwelle erreicht?
+E220 nein — warten
+E222 X = $8000
+E225 Spätverstellung der Zylinder 1 und 2
+E227 + 3 und 4
+E229 + 5
+E22B + Summe
+E22C irgendwo Spätverstellung vorhanden?
+E22E ja — warten
+E230 Interrupts sperren
+E231 $8051 Bits 5, 4 löschen
+E234 zurück auf Kennfeld 1
+E237 Interrupts freigeben
+E238 Zähler = 0
+E23B schreiben
+head E23E
+|Umschalten auf Kennfeld 2 und Fehler 2141/2143 bei anhaltendem Klopfen [Vermutung aus dem Zusammenhang].
+|Solange $8051.7 gesetzt ist (Klopfen an der Verstellgrenze [Vermutung], setzt der Interrupt), steigt
+|Zähler $807C einmal pro 2 Aufrufe (40 ms):
+|  größer C7AF = 137 (≈5,5 s) — Kennfeld 2 ($807A.7);
+|  danach größer C781 = 125 (≈5 s) — $807A Bits 6, 5;
+|  danach größer C782 = 125 — Fehler: Zylinder an G61 ($8053 Bits 7, 6) — $8051 Bits
+|  3, 1 (2141), Zylinder an G66 ($8053 Bits 5-3) — Bits 2, 0 (2143); $807A.4 — Lampe.
+|Ohne $8051.7 werden die Bits 6-3 von $807A gelöscht.
+E23E X = $8000
+E241 $807A
+E243 Klopfen an der Grenze ($8051.7)?
+E246 ja
+E248 nein — Bits 6-3 löschen
+E24A Zähler zurücksetzen
+E24C Bit 3 umschalten (Teiler durch 2)
+E24E schreiben
+E250 Zähler
+E252 Bit 3 = 1?
+E254 ja — nicht zählen
+E256 + 1
+E257 kein Überlauf
+E259 255
+E25A schreiben
+E25C Kennfeld 2 bereits aktiv?
+E25E nein
+E260 Bits 6, 5 bereits gesetzt?
+E262 nein
+E264 größer 125?
+E267 nein — warten
+E269 Zylinder an G61 ($8053 Bits 7, 6)?
+E26C nein
+E26E Fehler 2141
+E271 Lampe ($807A.4)
+E273 Zylinder an G66 ($8053 Bits 5-3)?
+E276 nein
+E278 Fehler 2143
+E27B Lampe
+E27D schreiben
+E27F größer 125?
+E282 nein — warten
+E284 Bits 6, 5
+E286 Zähler zurücksetzen
+E288 größer 137?
+E28B nein — warten
+E28D Kennfeld 2
+E28F Zähler = 0
+E291 $807A schreiben
+
+# ======================================================================
+# IRQ1 — Ereignisse vom Baustein $0100 (CBB1-D0E2)
+# ======================================================================
+label CBB1 IRQ1
+head CBB1
+|IRQ1 — INTERRUPT VOM BAUSTEIN $0100. Register $1E des Bausteins zeigt, welche Ereignisse
+|eingetroffen sind (mit Maske $8005). Zurückschreiben des Bits in $1E löscht das Ereignis.
+|  Bit 7 — Zylinderereignis (alle 144° Kurbelwelle): Synchronisation, Zündfunke (CC83);
+|  Bit 6 — Klopffenster: Öffnen/Schließen, Messung (CBDB);
+|  Bit 2 — Beginn der Schließzeit der Zündspule (CC74);
+|  Bit 5 — Tick (≈10 ms) -> D0E3 und Task-Dispatcher.
+|  Bit 1 (innerhalb des Zylinderereignisses) — Bezugsmarke G4.
+CBB1 X -> Baustein
+CBB4 Ereignisregister $1E
+CBB6 auswählen
+CBB8 Ereignisse
+CBBA nur freigegebene ($8005)
+CBBD Zylinderereignis (Bit 7)?
+CBBE nein
+CBC0 ja — Zylinder
+CBC3 Klopffenster?
+CBC5 ja
+CBC7 Schließzeit Zündspule?
+CBC9 nein
+CBCB ja
+CBCE Tick?
+CBD0 ja
+CBD2 nichts — verlassen
+CBD3 Tick-Ereignis löschen
+CBD5 schreiben
+CBD7 verschachtelte Interrupts zulassen
+CBD8 Tick-Verarbeitung
+head CBDB
+|KLOPFFENSTER. Zwei Durchgänge: Öffnen des Fensters ($80B5.7 = 1) und Schließen.
+|Schließen: PORT6.0 = 0, Fensterende = Beginn + $80B8, PORT6.3 = 0 (Drehzahlmesserimpuls,
+|Pin 7 [Vermutung]). Öffnen: Start ADC-Kanal 6 (Integrator), Messwert = $80EC - Ergebnis
+|-> Zylinderdatensatz +2, neuer Messwert (+0 Bit 7), Verstärkung des nächsten Zylinders in
+|Latch $0800 (Bit 4 — Sensor G66, nach Tabelle C910). Der Tester kann mit Befehl $1B
+|einen eigenen Latch-Wert vorgeben ($8205).
+CBDB Ereignis löschen
+CBDD schreiben
+CBDF Fensterphase
+CBE2 Fenster offen?
+CBE4 nein — öffnen
+CBE6 PORT6.0 = 0 (Integrator stoppen [Vermutung])
+CBE9 Phase: geschlossen
+CBEB schreiben
+CBEE Register $00 — Zeitpunkt des nächsten Fensterereignisses
+CBF0 Fensterbeginn
+CBF3 + Fensterlänge
+CBF6 schreiben
+CBF8 Zylinder
+CBFB merken, zu wem die Messung gehört
+CBFE PORT6.3 = 0: Drehzahlmesser (Pin 7) [Vermutung]
+CC01 verlassen
+CC02 ADC-Kanal 6
+CC05 Start
+CC08 ADC durch Interrupt belegt (Task 0 wiederholt ihre Wandlung)
+CC0B gemessener Zylinder
+CC0E × 8
+CC0F (dasselbe)
+CC10 (dasselbe)
+CC11 Zylinderdatensätze
+CC14 X -> Datensatz
+CC15 neue Verstärkung
+CC17 wurde aktuell
+CC19 neuer Messwert bereit
+CC1C X sichern
+CC1D X -> Baustein
+CC20 Register $00
+CC22 Fensterbeginn $80B7
+CC25 merken
+CC28 schreiben
+CC2A ADC-Ergebnisregister
+CC2C auswählen
+CC2E Referenz (Messung am Zylinderbeginn)
+CC31 - Ergebnis = Messwert
+CC34 PORT6.0 = 1
+CC37 nicht kleiner null
+CC39 0
+CC3A X zurückholen
+CC3B +2 = Messwert
+CC3D Phase: offen
+CC3F setzen
+CC42 schreiben
+CC45 Zylinder
+CC48 nächster
+CC49 5?
+CC4B nein
+CC4D 0
+CC4E × 8
+CC4F (dasselbe)
+CC50 (dasselbe)
+CC51 Datensätze
+CC54 X -> Datensatz des nächsten Zylinders
+CC55 dessen Verstärkung
+CC57 Testermodus $1B?
+CC5A prüfen
+CC5C nein
+CC5E Wert vom Tester
+CC61 Bit 4 löschen
+CC63 Sensortabelle C910
+CC66 Zylinder
+CC69 X -> Wert
+CC6A Sensor
+CC6C G61 — Bit 4 = 0
+CC6E G66 — Bit 4 = 1
+CC70 Verstärker-Latch $0800
+CC73 verlassen
+head CC74
+|Beginn der Schließzeit: Register $03 = $8024 + $8056 (Korrektur für den Unterschied der
+|Spätverstellung benachbarter Zylinder, damit die Schließzeit gleich bleibt).
+CC74 Ereignis löschen
+CC76 schreiben
+CC78 Register $03
+CC7A Beginn der Schließzeit
+CC7D + Korrektur
+CC80 schreiben
+CC82 verlassen
+head CC83
+|ZYLINDEREREIGNIS. Vor der Synchronisation — Suche: Marke G4 bei niedrigem Hallsignal
+|(PORT6.1 = 0) — erster Zylinder im Verdichtungstakt, Synchronisation hergestellt.
+|11 Ereignisse ohne Marke — Fehler G4 (2112). 4 Marken bei hohem Hallsignal — Fehler
+|Hallgeber (2113). Nach der Synchronisation — CD9C.
+CC83 Ereignis löschen
+CC85 schreiben
+CC87 Port 6 (Hall — Bit 1)
+CC89 synchronisiert?
+CC8B prüfen
+CC8E nein
+CC90 ja
+CC93 PORT6.0 = 1
+CC96 Marke G4?
+CC98 prüfen
+CC9A ja
+CC9C Drehzahl
+CC9F null?
+CCA1 ja — verlassen
+CCA3 Ereignisse ohne Marke + 1
+CCA6 Wert
+CCA9 11?
+CCAB nein — verlassen
+CCAD Fehler G4 (2112)
+CCAF setzen
+CCB2 schreiben
+CCB5 verlassen
+CCB6 Marke löschen
+CCB8 Zylinderzähler = 0
+CCBB Drehzahl
+CCBE null?
+CCC0 ja — verlassen
+CCC2 Hallsignal hoch?
+CCC4 nein — Synchronisation
+CCC6 Marken bei hohem Hallsignal + 1
+CCC9 Wert
+CCCC 4?
+CCCE nein — verlassen
+CCD0 Fehler Hallgeber (2113)
+CCD2 setzen
+CCD5 schreiben
+CCD8 verlassen
+CCD9 SYNCHRONISIERT ($8095.5)
+CCDB setzen
+CCDE schreiben
+CCE1 Synchronisationsverdacht löschen
+CCE3 löschen
+CCE6 schreiben
+CCE9 PORT6.6 = 1: Kraftstoffpumpenrelais J17 einschalten
+CCEC 0
+CCED Zylinder 0
+CCF0 Hallzähler 0
+CCF3 Stellglieddiagnose beenden
+CCF6 Baustein: Register $1C = $27 (zylinderweiser Modus)
+CCF9 schreiben
+CCFB Register $1D = $E4 (Ereignismaske)
+CCFE dieselbe Maske in eigener Kopie
+CD01 schreiben
+CD03 Register $06 = $32 [?]
+CD06 schreiben
+CD08 ADC-Kanal 6
+CD0B Start
+CD0D Register $00
+CD0F Fensterbeginn
+CD12 merken
+CD15 schreiben
+CD17 Fenster offen
+CD19 setzen
+CD1C schreiben
+CD1F Zylinder
+CD22 × 8
+CD23 (dasselbe)
+CD24 (dasselbe)
+CD25 Datensätze
+CD28 X -> Datensatz
+CD29 Verstärkung
+CD2B Bit 4 löschen
+CD2D Sensortabelle
+CD30 Zylinder
+CD33 X -> Wert
+CD34 Sensor
+CD36 G61
+CD38 G66
+CD3A Verstärker-Latch
+CD3D ADC-Ergebnisregister
+CD3F auswählen
+CD42 Ergebnis
+CD45 Messreferenz
+head CD48
+|Zählung der Starts ohne neue Fehler (einmal pro Einschalten, bei Synchronisation).
+|50 Starts ($32) ohne Änderung im Fehlerspeicher — automatisches Löschen
+|($8092.1). Wurde der Speicher aus dem internen RAM wiederhergestellt, wird
+|in der Kopie ($44) gezählt, mit Korrektur der Prüfsumme ($40).
+CD48 Schwelle 50
+CD4A X = $8000
+CD4D internes RAM eingeschaltet?
+CD50 nein
+CD52 $8003.2 markieren
+CD55 Speicher wiederhergestellt ($8003.3)?
+CD58 ja — in der Kopie zählen
+CD5A „Codes ausgegeben“ löschen
+CD5D Starts + 1
+CD60 Wert
+CD63 kleiner 50?
+CD64 ja
+CD66 50 — löschen
+CD68 internes RAM einschalten
+CD6B „Codes ausgegeben“ in der Kopie?
+CD6E nein
+CD70 löschen
+CD73 Prüfsumme
+CD75 - $80
+CD77 schreiben
+CD79 Starts + 1 (in der Kopie)
+CD7C Prüfsumme + 1
+CD7F Starts
+CD81 kleiner 50?
+CD82 ja
+CD84 0
+CD87 Prüfsumme = 0
+CD89 Codes = 0
+CD8B Starts = 0
+CD8D Löschanforderung
+CD90 war das RAM schon vorher eingeschaltet?
+CD93 ja — nicht anfassen
+CD95 internes RAM ausschalten
+CD98 $8003.2 löschen
+CD9B verlassen
+head CD9C
+|Nach der Synchronisation: Zylinderzähler $8096 = 0…4 (Zündfolge), Rücksetzen an
+|der Marke G4 bei Hall low. Beim Start: 2-mal Hall low nicht auf Zylinder null —
+|Fehler Hallgeber (2113) und Notlauf des Chips ($1C = $21, ohne zylinderselektive Klopfregelung [Vermutung]).
+CD9C Marke G4?
+CD9E prüfen
+CDA0 nein
+CDA2 Marke löschen
+CDA4 Hall high?
+CDA6 nein — Zylinder 0
+CDA8 Zylinder
+CDAB + 1
+CDAC 5?
+CDAE nein
+CDB0 0
+CDB1 $8096 = Zylinder
+CDB4 Start?
+CDB6 prüfen
+CDB9 nein
+CDBB Zylinder 0?
+CDBE ja — in Ordnung
+CDC0 Hall high?
+CDC2 ja — in Ordnung
+CDC4 Abweichung + 1
+CDC7 Wert
+CDCA 2?
+CDCC nein
+CDCE Fehler Hallgeber (2113)
+CDD0 setzen
+CDD3 speichern
+CDD6 Chip: Register $1C = $21 (Notlauf [Vermutung])
+CDD9 speichern
+CDDB verlassen
+CDDC Abweichungen 0
+CDDF Register $14, Kanal 0
+CDE0 (dasselbe)
+CDE2 AD-Wandlung Druck starten (Messung am Zylinderanfang)
+CDE4 AD-Wandler vom Interrupt belegt
+CDE7 Stillstandszähler = 0 (Motor dreht)
+CDEA PORT6.3 = 1: Drehzahlmesser [Vermutung]
+CDED Hall high?
+CDF0 nein
+CDF2 $806E.4?
+CDF5 prüfen
+CDF7 nein
+CDF9 IRQ2 freigeben [?]
+head CDFC
+|Sanfte Änderung des Zündwinkels. $8023 — tatsächlich ausgegebener Winkel; $8022 — Sollwert.
+|Später (Rücknahme) — sofort bis 3 Einh. (C6DA) pro Zylinder; früher — um 1 Einh. (C6D9) alle
+|$808B + 1 Zylinder. Bei Ruckeldämpfung — Rücknahme $8080 = $808A, Grenze $808E.
+CDFC Ruckeldämpfung begonnen?
+CDFF prüfen
+CE01 nein
+CE03 Rücknahme
+CE06 $8080
+CE09 0
+CE0A Schrittzähler
+CE0D „begonnen“ löschen
+CE0F Winkel
+CE12 + Rücknahme
+CE15 später als Grenze?
+CE18 nein
+CE1A Grenze
+CE1D speichern
+CE20 früher als 45?
+CE23 nein
+CE25 $8088.3 löschen: Dämpfung beendet
+CE27 Grenze wieder 45
+CE2A speichern
+CE2D 0
+CE2E Rücknahme = 0
+CE31 $8088 speichern
+CE34 ausgegebener Winkel
+CE37 Kopie
+CE38 - Sollwert
+CE3B gleich?
+CE3D Schritt = 0
+CE40 weiter
+CE42 Sollwert später — schnell zurücknehmen
+CE44 Schrittzähler
+CE47 erreicht?
+CE4A ja
+CE4C + 1
+CE4D speichern
+CE50 weiter
+CE52 0
+CE53 speichern
+CE56 um 1 früher
+CE59 übersprungen?
+CE5B nicht früher als Sollwert?
+CE5E ja
+CE60 Sollwert
+CE63 weiter
+CE65 um 3 später
+CE68 übersprungen?
+CE6A nicht später als Sollwert?
+CE6D ja — Sollwert
+CE6F ausgegebenen Winkel speichern
+CE72 + Rücknahme der Dämpfung
+CE75 später als Grenze?
+CE78 nein
+CE7A Grenze
+CE7D Patch: + Rücknahme bei schnellem Gasgeben
+CE80 Ergebnisregister AD-Wandler
+CE82 auswählen
+CE84 Druck am Zylinderanfang
+CE86 $8019 = Druck
+CE89 Register $14
+CE8B Kanal 6
+CE8D AD-Wandlung Klopfen starten
+CE8F Zylinder
+head CE92
+|ZYLINDERSELEKTIVE ZÜNDWINKELRÜCKNAHME DURCH KLOPFREGELUNG. $802F+N — Rücknahme Zylinder N (0…6 Einh.,
+|6 Einh. ≈ 8°). Pro Zylinder: +5 — Haltezeit nach Klopfen ($804F, Tabelle C230
+|nach Drehzahl, in Ereignissen), +10 — Abbau-Timer ($804E, C240), +15 — Zeit mit Rücknahme
+|über dem „Boden“ (für E29F), +20 — „Boden“ (gelernte Mindestrücknahme, 0…4).
+|Klopfen: Rücknahme + 2 (C6DB), höchstens 6. Kein Klopfen: nach der Haltezeit Rücknahme um 1 abwärts
+|bis zum „Boden“ alle $804E Ereignisse.
+|Sensor defekt unter Last bei warmem Motor — Rücknahme 6 an allen Zylindern.
+|Regelung abgeschaltet ($8050.7 = 0) oder Wechsel auf Kennfeld 2 — alle Rücknahmen 0.
+|$8052 — Zylindermaske, $8054 — Klopfen pro Zylinder (Bit 0 — Episode läuft),
+|$8053 — Zylinder mit der größten Rücknahme, $802E — Pause 4 Ereignisse nach Klopfen.
+CE92 Maske = 0
+CE93 Bit
+CE94 schieben
+CE95 Zylinder - 1
+CE96 wiederholen
+CE98 $8052 = Zylindermaske (Zylinder 0 — Bit 7)
+CE9B Fehler Klopfsensor?
+CE9D prüfen
+CEA0 nein
+CEA2 Rücknahme 6
+CEA5 Modus
+CEA8 invertieren
+CEAA warm und unter Last?
+CEAC ja — 6
+CEAE Rücknahme 0
+CEAF A = 0
+CEB0 X = 0
+CEB3 Zähler auf null
+CEB6 (dasselbe)
+CEB9 (dasselbe)
+CEBC (dasselbe)
+CEBF (dasselbe)
+CEC2 (dasselbe)
+CEC5 (dasselbe)
+CEC8 (dasselbe)
+CECB alle Rücknahmen = B
+CECE (dasselbe)
+CED1 (dasselbe)
+CED4 (dasselbe)
+CED7 (dasselbe)
+CEDA Pause = 0
+CEDD Bits 2, 1 behalten
+CEDF Klopfen löschen
+CEE2 speichern
+CEE5 A = 0
+CEE8 zum Zündfunken
+CEEB Flags
+CEEE Wechsel auf Kennfeld 2 ($8051.5)?
+CEF0 nein
+CEF2 bereits genullt?
+CEF4 ja
+CEF6 markieren
+CEF8 speichern
+CEFB alle Rücknahmen 0
+CEFD Modus
+CF00 Regelung abgeschaltet — alle 0
+CF02 Spannung in Ordnung?
+CF04 ja
+CF06 nein: Rücknahme nicht ändern
+CF09 Zylinder
+CF0C X -> Rücknahme
+CF0D Maske
+CF10 zum Zündfunken
+label CF13 KNOCK_PTR
+head CF13
+|KNOCK_PTR — X -> Rücknahme des Zylinders nach Maske B (Bit 7 — Zylinder 0).
+CF13 Rücknahmen
+CF16 dieses Bit?
+CF18 ja
+CF1A nächster Zylinder
+CF1B nächstes Bit
+CF1C wiederholen
+CF1E Rücksprung
+CF1F Klopfen pro Zylinder
+CF22 Klopfen in diesem Zylinder?
+CF25 ja
+CF27 Episode läuft?
+CF29 ja
+CF2B nein — nichts ändern
+CF2E Maske
+CF31 invertieren
+CF32 Zylinder aus $8055 löschen
+CF35 speichern
+CF38 Pause nach Klopfen
+CF3B null
+CF3D - 1
+CF3E speichern
+CF40 Klopfen in diesem Zylinder?
+CF43 nein
+CF45 Maske
+CF48 übrige Zylinder
+CF49 nur Bits 7-3
+CF4B $8055 [?] (Korrektur C7AB = 0)
+CF4E Episode läuft?
+CF50 prüfen
+CF53 ja
+CF55 Episode beginnen
+CF58 speichern
+CF5B dieser Zylinder
+CF5E $8053 = erster klopfender Zylinder
+CF61 Pause 4 Ereignisse
+CF63 speichern
+CF66 Rücknahmen
+CF69 Zylinder
+CF6C X -> Rücknahme
+CF6D Maske
+CF70 Klopfen?
+CF73 ja — Rücknahme erhöhen
+CF75 Haltezeit
+CF77 läuft — warten
+CF79 Rücknahme
+CF7B null
+CF7D Abbau-Timer
+CF7F läuft — warten
+CF81 über dem „Boden“?
+CF83 nein — bis zum „Boden“
+CF85 - 1
+CF88 weiter
+CF8A „Boden“
+CF8C weiter
+CF8E nicht unter null
+CF90 0
+CF91 Rücknahme speichern
+CF93 Abbau-Timer ($804E)
+CF96 speichern
+CF98 weiter
+CF9A Timer - 1
+CF9C Rücknahmen aller Zylinder
+CF9F (dasselbe)
+CFA2 (dasselbe)
+CFA5 (dasselbe)
+CFA8 (dasselbe)
+CFAB vorhanden — Episode läuft
+CFAD $8055
+CFB0 vorhanden
+CFB2 Episode beendet
+CFB3 $8053 = 0
+CFB6 Bit 0 löschen
+CFB8 löschen
+CFBB speichern
+CFBE Rücknahmen
+CFC1 Zylinder
+CFC4 X -> Rücknahme
+CFC5 0
+CFC6 Zeit über „Boden“ = 0
+CFC8 zum Zündfunken
+CFCA Haltezeit - 1
+CFCC weiter
+CFCE Rücknahme
+CFD0 + 2
+CFD3 sichern
+CFD4 Kennfeld 2 wegen Klopfen?
+CFD6 prüfen
+CFD9 ja
+CFDB Rücknahme
+CFDC größer als 6?
+CFDE nein
+CFE0 6
+CFE2 weiter
+CFE4 Rücknahme
+CFE5 größer als C6DD = 6?
+CFE8 nein
+CFEA 6
+CFED Rücknahme speichern
+CFEF Haltezeit ($804F)
+CFF2 speichern
+CFF4 Rücknahme
+CFF6 - „Boden“
+CFF8 unter dem „Boden“
+CFFA weniger als 2 darüber?
+CFFC nein
+CFFE ja — Zeit über „Boden“ = 0
+D000 X sichern
+D001 Zylinder mit der größten Rücknahme
+D004 X -> dessen Rücknahme
+D007 dessen Rücknahme
+D009 X zurückholen
+D00A größer als unsere?
+D00C nein — unsere ist die größte
+D00E - C7AC = 8
+D011 unter null (immer bei Rücknahme ≤ 6)
+D013 größer als unsere?
+D015 nein
+D017 nachziehen
+D019 weiter
+D01B $8053 = dieser Zylinder
+D01E Rücknahme
+D020 in $8055?
+D023 nein
+D025 + C7AB = 0
+D028 Kennfeld 2?
+D02A prüfen
+D02D ja
+D02F größer als 6?
+D031 nein
+D033 6
+D035 weiter
+D037 größer als 6?
+D03A nein
+D03C 6
+D03F Rücknahme des nächsten Zylinders
+D041 letzter Zylinder?
+D044 nein
+D046 nächster ist der erste
+D049 Differenz der Rücknahmen
+D04A $8056 — Korrektur Schließwinkelbeginn
+D04D + Winkel
+D050 unter null?
+D051 ja — Minimum
+D053 später als 45?
+D056 nein
+D058 Ruckeldämpfung?
+D05A prüfen
+D05D ja — ohne Begrenzung
+D05F 45
+D062 weiter
+D064 früher als 5?
+D067 nein
+D069 5
+D06C - Verzögerungskorrektur ($8021)
+D06F über null?
+D071 1
+D073 Register $02 — Zündzeitpunkt
+D075 speichern
+D078 Rücknahmen
+D07B Flags
+D07E Zylinder mit der größten Rücknahme
+D081 keiner — „an der Grenze“ löschen
+D083 X -> dessen Rücknahme
+D086 „an der Grenze“
+D088 Kennfeld 2?
+D08A prüfen
+D08D ja — Grenze 6
+D08F Patch: Grenze 4 oder 6 je nach Drehzahl
+table D092 1 totes Byte (unter dem Patch übrig geblieben)
+D093 Grenze 6
+D096 Rücknahme nicht unter Grenze?
+D098 ja — „an der Grenze“
+D09A „an der Grenze“ löschen
+D09C 0
+D09D Zähler $807C = 0
+D0A0 $8051 speichern
+D0A3 Flags
+D0A6 größte Rücknahme
+D0A8 kleiner als 6?
+D0AB nein
+D0AD aktuelle Fehler 2141/2143 löschen
+D0AF speichern
+D0B2 Ergebnisregister AD-Wandler
+D0B4 auswählen
+D0B7 Ergebnis
+D0BA $80EC — Bezugswert für Klopfmessung
+D0BD Momentaufnahme schon erfolgt ($8051.6)?
+D0BF ja — verlassen
+D0C1 G42
+D0C4 $806C = Momentaufnahme G42
+D0C7 Druck
+D0CA nicht über 141?
+D0CC ja — verlassen
+D0CE G42 unter 165 (warme Ansaugluft) [Vermutung]?
+D0D0 nein
+D0D2 $8066.4 [?]
+D0D4 setzen
+D0D7 speichern
+D0DA Momentaufnahme erfolgt
+D0DC setzen
+D0DF speichern
+D0E2 verlassen
+head F920
+|Patch zu D08F: auf Kennfeld 1 „an der Grenze“ — Rücknahme ≥ 4 bei Drehzahl ab 70 Einh.
+|(≈1550 U/min), sonst ≥ 6. So erfolgt der Wechsel auf Kennfeld 2 früher.
+F920 Drehzahl
+F923 70 und mehr?
+F925 4
+F927 ja
+F929 6
+F92B zurück
+head E293
+|„Boden“ der Klopfrücknahme ($8043+N), Task 1. $804D zählt 0…50 (≈1 s).
+|$803E+N — Zeit (Aufrufe je 20 ms), solange die Rücknahme des Zylinders um 2 oder mehr über dem „Boden“ liegt
+|(setzt der Interrupt zurück, CFFE). Bei 254 (≈5 s) — „Boden“ + 2 (bis 2 auf Kennfeld 1,
+|bis 4 auf Kennfeld 2). Sonst etwa alle ≈10 s „Boden“ - 2. So merkt sich das Steuergerät einen Zylinder,
+|der ständig klopft.
+E293 Sekundenzähler
+E296 + 1
+E297 51?
+E299 nein
+E29B 0
+E29C speichern
+E29F Zylinder 0
+E2A2 Zeit über „Boden“ + 1
+E2A4 kein Überlauf
+E2A6 auf 255 stehen bleiben
+E2A8 Zeit
+E2AA „Boden“ null?
+E2AC nein
+E2AE ja — Abbau-Timer „Boden“ = 0
+E2B0 kleiner als C780 = 254?
+E2B3 ja — Abbau „Boden“
+E2B5 „Boden“
+E2B7 Kennfeld 2?
+E2B9 prüfen
+E2BC nein
+E2BE nicht kleiner als 4?
+E2C0 ja — nicht erhöhen
+E2C2 + 2
+E2C4 0
+E2C5 Abbau-Timer = 0
+E2C7 Zeit = 0
+E2C9 „Boden“ speichern
+E2CB kleiner als 2?
+E2CD ja — + 2
+E2CF nicht erhöhen
+E2D1 Sekundenzähler
+E2D4 50 erreicht?
+E2D6 nein
+E2D8 Abbau-Timer + 1 (einmal pro Sekunde)
+E2DA Timer
+E2DC kleiner als 10?
+E2DE ja — warten
+E2E0 0
+E2E1 Timer = 0
+E2E3 „Boden“
+E2E5 null — nichts
+E2E7 - 2
+E2E9 nicht unter null
+E2EB 0
+E2EC „Boden“ speichern
+E2EE nächster Zylinder
+E2EF alle 5?
+E2F2 nein
+head E2F4
+|$808C — Motorlaufzeit (Aufrufe von Task 1 je 20 ms), solange Drehzahl ≥ 16 Einh.;
+|bleibt bei 65535 stehen; unter 16 Einh. — null.
+E2F4 0
+E2F7 Drehzahl
+E2FA unter 16?
+E2FC ja — nullen
+E2FE Zeit
+E301 + 1
+E302 übergelaufen — nicht speichern
+E304 speichern
+E307 Ende der Task — zurück zum Dispatcher
+
+# ======================================================================
+# Tick (D0E3-D17C) und Task-Verteiler (D17D-D1E4)
+# ======================================================================
+head D0E3
+|TICK (≈10 ms), aus IRQ1 bei freigegebenen Interrupts.
+|Motorstillstand: nach der Synchronisation wächst $8025 jeden Tick, ein Zylinderereignis
+|setzt ihn zurück. 100 Ticks (C78D, ≈1 s) ohne Ereignis bedeuten Motorstillstand:
+|$8003.7; bei PORT5.5 = 1 [?] wird der Fehlerspeicher mit Prüfsumme ins interne RAM kopiert,
+|und das Programm startet neu (CA8E), ohne vollständige RAM-Prüfung.
+|Vor der Synchronisation: bei PORT5.5 = 1 und $8003.3 (Kopie wartet auf Rückspielen), falls
+|die Versorgung des internen RAM nicht ausgefallen ist (RP5CR.7) und die Prüfsumme stimmt, werden Codes und Zähler
+|aus der Kopie zurückgeholt; sonst vollständiger Neustart (CA88).
+D0E3 synchronisiert?
+D0E5 prüfen
+D0E8 nein
+D0EA Ticks ohne Ereignis + 1
+D0ED Wert
+D0F0 kleiner als 100?
+D0F3 ja - zu den Tasks
+D0F5 Interrupts sperren
+D0F6 Motor steht ($8003.7)
+D0F8 setzen
+D0FB speichern
+D0FE PORT5.5 [?]
+D101 0 - ohne Kopie
+D103 internes RAM einschalten
+D106 Prüfsumme = 0
+D107 Codebyte 1
+D10A zur Prüfsumme
+D10B Kopie
+D10D Codebyte 2
+D110 zur Prüfsumme
+D111 Kopie
+D113 Codebyte 3
+D116 zur Prüfsumme
+D117 Kopie
+D119 Starts ohne Änderung
+D11C zur Prüfsumme
+D11D Kopie
+D11F $802C
+D122 zur Prüfsumme
+D123 Kopie
+D125 Prüfsumme
+D127 Stack neu setzen
+D12A X = $8005
+D12D Programm neu starten (ohne RAM-Prüfung)
+D130 PORT5.5 [?]
+D133 0 - zu den Tasks
+D135 Flags
+D138 Kopie wartet auf Rückspielen?
+D13A nein - zu den Tasks
+D13C Versorgung des internen RAM nicht ausgefallen?
+D13F ausgefallen - vollständiger Neustart
+D141 Interrupts sperren
+D142 internes RAM einschalten
+D145 Kopie
+D148 Prüfsumme = 0
+D149 + Byte
+D14B nächstes
+D14C bis $45
+D14F wiederholen
+D151 Prüfsumme stimmt?
+D153 nein - vollständiger Neustart
+D155 Codes zurückholen
+D157 (ebenso)
+D15A (ebenso)
+D15C (ebenso)
+D15F (ebenso)
+D161 (ebenso)
+D164 Starts
+D166 (ebenso)
+D169 $802C
+D16B (ebenso)
+D16E internes RAM ausschalten
+D171 Interrupts freigeben
+D172 Kopie zurückgeholt
+D174 speichern
+D177 zu den Tasks
+D179 Interrupts sperren
+D17A vollständiger Neustart
+head D17D
+|TASK-VERTEILER (präemptiv). Zähler $8006-$8009, je einer pro Task,
+|Teiler D1E1 = 1 2 4 10. Jeden Tick Zähler + 1; erreicht er den Teiler, ist die Task
+|bereit (Bit 6). Gestartet wird die erste bereite Task in der Reihenfolge (Bit 7 = läuft),
+|falls keine laufende vor ihr steht: Task 0 unterbricht 1-3, Task 1 unterbricht 2-3 usw.
+|Eine Task endet mit Sprung nach D1D1: „läuft“ löschen, nächste suchen.
+D17D Teiler
+D180 auf den Stack
+D181 Zähler Task 0
+D184 + 1
+D186 Wert
+D188 X sichern
+D18B Teiler
+D18C Teiler
+D18E nächster
+D18F sichern
+D190 Zähler
+D193 Zählstand (ohne Bits 7, 6)
+D195 Teiler erreicht?
+D196 nein
+D198 Zähler
+D19A + bereit
+D19C - Teiler (Zählung ab null)
+D19D speichern
+D19F nächster Zähler
+D1A0 alle vier?
+D1A3 nein
+D1A5 Zeiger entfernen
+D1A6 Tasknummer 0
+D1A7 Zähler Task 0
+D1AA Zähler
+D1AC läuft? - verlassen (wichtigere Task belegt)
+D1AE bereit?
+D1B0 ja - starten
+D1B2 Nummer + 1
+D1B3 nächster
+D1B4 alle?
+D1B7 nein
+D1B9 Interrupt verlassen
+D1BA läuft
+D1BC „bereit“ löschen
+D1BE speichern
+D1C0 Task-Tabelle D1C9
+D1C3 Nummer × 2
+D1C4 X -> Adresse
+D1C5 Task-Adresse
+D1C7 zur Task springen
+table D1C9 8 Task-Adressen: D220 (0), DD18 (1), E30A (2), EA2C (3)
+D1D1 Zähler
+D1D4 Zähler
+D1D6 läuft? - diese ist beendet
+D1D8 nächster
+D1D9 suchen
+D1DB „läuft“ löschen
+D1DD speichern
+D1DF nächste bereite Task suchen
+table D1E1 4 Task-Teiler: 1 2 4 10 Ticks
+
+# ======================================================================
+# TASK 2 (alle 4 Ticks = 40 ms): Lambda, Gemisch N7 (E30A-E790)
+# ======================================================================
+head E30A
+|TASK 2 - alle 4 Ticks (≈40 ms).
+|Startzustand (einmalig, $8060.2): G62 < 127 bedeutet Warmstart ($8060.3);
+|104 ≤ G62 < 127 setzt zusätzlich $8060.0 (halbwarm) [Vermutung].
+|$8066.1 - Signal G39 ≥ 239 (Leitungsunterbrechung zur Sonde [Vermutung]).
+|N7 = 50 % dauerhaft: Test 4441; Testerbefehl $11 ($8077.5);
+|Kontakt 5 länger als 2,5 s geschlossen bei laufendem Motor (CO-Einstellung [Vermutung]).
+E30A X = $8000
+E30D Lambda-Flags
+E30F Startzustand schon gespeichert?
+E311 ja
+E313 gespeichert
+E315 G62
+E317 127 und mehr (kalt)?
+E319 ja
+E31B Warmstart
+E31D unter 104?
+E31F ja
+E321 halbwarm
+E323 $8060 speichern
+E325 „Sondenunterbrechung“ löschen
+E328 G39
+E32A 239 und mehr?
+E32C nein
+E32E Sondenunterbrechung ($8066.1)
+E331 Testerbefehl $11?
+E334 ja - 50 %
+E336 Motor hat gedreht?
+E339 ja - Kontakt 5 prüfen
+E33B Test: Schritt N7?
+E33E nein - Normalbetrieb
+E340 N7 = 50 %
+E342 ausgeben
+E345 $8003.1 [?]
+E348 gesetzt - Normalbetrieb
+E34A Blinkcode-Liste beendet?
+E34D ja - Normalbetrieb
+E34F Schließzeit Kontakt 5
+E351 unter 25 (2,5 s)?
+E353 ja - Normalbetrieb
+E355 Kontakt 5 noch geschlossen?
+E358 ja - 50 %
+E35A Patch: Begrenzung der Lambdaschritte ($8214)
+E35D 16 Punkte
+E35F Drehzahlachse C210
+E362 Punkt suchen
+E365 vorübergehend
+E368 Tabelle C2F0 = 23 21 19 18 17 17 12 8 5 …
+E36B X -> Wert
+E36C N7-Zuschlag nach Druckanstieg
+E36E $805B
+E371 Anreicherung nach Druckanstieg ($8077.6)?
+E373 prüfen
+E376 nein
+E378 ja - ohne Lambda
+E37B 0
+E37C Codierung: PORT5.4 = 1 bedeutet BUND
+E37F BUND - 0
+E381 CAL - $80
+E383 $8058 = Markt (für Lambdatabellen)
+E386 N7 = 0 %
+E387 synchronisiert?
+E389 prüfen
+E38C nein - N7 0 %
+E38E Zeit seit Synchronisation ($80AF/$80B0, Aufrufe zu 40 ms)
+E391 + 1
+E392 übergelaufen
+E394 speichern
+E397 Sondenunterbrechung?
+E39A prüfen
+E39C ja - ohne Lambda
+head E3A1
+|SONDENBEREITSCHAFT. Die Sonde ist „lebendig“, wenn das Signal das Band 32…58 verlässt
+|(C6B8 / C6B7): ≥ 58 bedeutet fett ($8066.3 = 1, $8060.7 = 1), < 32 bedeutet mager.
+|15 Aufrufe außerhalb des Bandes (C6BC, 0,6 s), dann ist die Sonde bereit: $8060.4 und $8066.2.
+|Bei geschlossenem Regelkreis ($8060.6) bedeuten 50 Aufrufe (2 s, C6BA/C6BB) im Band,
+|dass die Sonde „verstummt“ ist: $8060.6 und $8060.4 löschen (offener Regelkreis).
+E3A1 Zähler
+E3A4 auf den Stack
+E3A5 X = $8000
+E3A8 G39
+E3AB 58 und mehr?
+E3AE ja - fett
+E3B0 32 und mehr?
+E3B3 ja - im Band
+E3B5 mager: $8066.3 = 0
+E3B8 geschlossener Regelkreis?
+E3BA prüfen
+E3BD ja - Zähler nicht ändern
+E3BF Seite: mager
+E3C1 löschen
+E3C4 speichern
+E3C7 zählen
+E3C9 fett: $8066.3 = 1
+E3CC geschlossener Regelkreis?
+E3CE prüfen
+E3D1 ja
+E3D3 Seite: fett
+E3D5 setzen
+E3D8 speichern
+E3DB Zähler
+E3DC + 1
+E3DD unter 15?
+E3E0 ja
+E3E2 Sonde bereit ($8060.4)
+E3E4 setzen
+E3E7 speichern
+E3EA erster Schritt nach Bereitschaft ($8066.2)
+E3ED Zähler = 0
+E3EF löschen
+E3F0 weiter
+E3F2 geschlossener Regelkreis?
+E3F4 prüfen
+E3F7 nein - nicht zählen
+E3F9 Zähler
+E3FA + 1
+E3FB war es fett?
+E3FD prüfen
+E400 ja
+E402 C6BB = 50
+E405 weiter
+E407 C6BA = 50
+E40A erreicht?
+E40B nein
+E40D Sonde verstummt: $8060.6 und .4 löschen
+E40F löschen
+E412 speichern
+E415 Zähler = 0
+E416 speichern
+head E419
+|FEHLER 2342 (Lambdaregelung). Teillast, Drosselklappe nicht geschlossen,
+|Signal G39 nahe der Mitte 40 ± 6 für 125 Aufrufe in Folge (5 s): die Sonde „hängt“:
+|Bereitschaft löschen; sind seit der Synchronisation ≥ 7500 Aufrufe (300 s) vergangen
+|und ist der Motor heiß (G62 ≤ 30, ≈80 °C), Fehler 2342 ($8060.1).
+|Laut SSP: unplausibles G39 länger als 5 s bei warmem Motor.
+E419 F81 defekt?
+E41B prüfen
+E41E ja - F81 nicht prüfen
+E420 Schalteingänge
+E423 Vollast (F81)?
+E425 ja - Zähler auf null
+E427 Drosselklappe geschlossen?
+E42A ja - Zähler auf null
+E42C G39 - 40
+E42E positiv
+E430 Betrag
+E431 weiter als 6 von der Mitte?
+E434 ja - Sonde arbeitet, Zähler auf null
+E436 Zähler „hängt“
+E439 + 1
+E43A unter 125 (5 s)?
+E43C ja - speichern
+E43E Flags
+E441 Bereitschaft und geschlossenen Regelkreis löschen
+E443 Zeit seit Synchronisation
+E446 unter 7500 (300 s)?
+E449 ja - kein Fehler
+E44B G62
+E44E kälter als 30?
+E450 ja - kein Fehler
+E452 Fehler 2342
+E454 speichern
+E457 Zähler = 0
+E458 speichern
+head E45B
+|N7 in Sonderbetriebsarten: Start (Drehzahl < 16 Einh.) - 80 % bei G62 > 189
+|(kälter als ≈ −4 °C [Vermutung]), sonst 50 %; Kraftstoffabschaltung (J142, $8077.0)
+|bei laufender Pumpe und nicht im Start - 40 %.
+E45B Drehzahl-Flags
+E45E Start (unter 16 Einh.)?
+E460 nein
+E462 80 % (C6B3)
+E465 G62
+E468 kälter als 189?
+E46B ja - 80 %
+E46D 50 % (C6B4)
+E470 ausgeben
+E473 Bit 5 (Drehzahl unter 24 Einh.)?
+E475 ja - normale Berechnung
+E477 Port 6
+E479 Pumpe ein?
+E47B nein - normale Berechnung
+E47D Abschaltung?
+E47F prüfen
+E482 nein
+E484 Abschaltung N65: N7 = 40 % (C6B5)
+E487 ausgeben
+head E48A
+|GRUNDKENNFELD N7 16×16, in %: Zeilen sind Druck (Achse C500 = 255 173 169 … 38 0),
+|Spalten sind Drehzahl (Achse C510). Vollast (F81) ist die oberste Zeile, Leerlauf
+|die unterste. Kennfeld C300 normal, C400 bei Sondenunterbrechung ($8066.1).
+|$8010 - Höhenfaktor C550 = 255 229 204 191 nach Luftdruck.
+|$8011 - Korrektur nach Kühlmitteltemperatur (128 = keine Korrektur): C540 (Kaltstart),
+|C520 (Warmstart), C530 (Warmstart und Sondenunterbrechung); Achse sind die ersten 8 Bytes, Werte die nächsten 8.
+E48A Druckachse C500
+E48D 16 Punkte
+E48F F81 defekt?
+E491 prüfen
+E494 ja
+E496 Schalteingänge
+E499 Vollast?
+E49B nein
+E49D oberste Zeile
+E49F weiter
+E4A1 Drosselklappe geschlossen?
+E4A4 nein - nach Druck
+E4A6 unterste Zeile
+E4A7 Zeile
+E4AA weiter
+E4AC Zeile nach Druck
+E4AF Drehzahlachse C510
+E4B2 16 Punkte
+E4B4 Spalte
+E4B7 Kennfeld C300
+E4BA sichern
+E4BB Sondenunterbrechung?
+E4BD prüfen
+E4C0 nein
+E4C2 Kennfeld C400
+E4C5 zurückholen
+E4C6 N7 aus dem Kennfeld
+E4C9 $8057 = Grundwert N7
+E4CC Höhenachse C2B0
+E4CF 4 Punkte
+E4D1 Luftdruck
+E4D4 Intervall suchen
+E4D7 Index
+E4D8 Anteil
+E4DB A = Anteil
+E4DC B = Index
+E4DD Tabelle C550
+E4E0 X -> Wert
+E4E1 B = Anteil
+E4E2 Interpolation
+E4E5 $8010 = Höhenfaktor
+E4E8 Grundwert N7
+E4EB Anreicherung nach Druckanstieg?
+E4ED prüfen
+E4F0 nein
+E4F2 + drehzahlabhängiger Zuschlag
+E4F5 über 100 %?
+E4F7 nein
+E4F9 100 %
+E4FB $8057
+E4FE X = $8000
+E501 Tabelle C520 (Warmstart)
+E504 Warmstart?
+E507 nein - C540
+E509 Sondenunterbrechung?
+E50C nein - C520
+E50E C530
+E511 weiter
+E513 C540 (Kaltstart)
+E516 $8011 = Tabellenadresse
+E518 X = Tabelle
+E519 G62
+E51C 8 Punkte
+E51E Intervall suchen
+E521 Index
+E522 Anteil
+E525 A = Anteil
+E526 B = Index
+E527 Tabelle
+E52A Werte nach der Achse (+8)
+E52C X -> Wert
+E52D B = Anteil
+E52E Interpolation
+E531 $8011 = Temperaturkorrektur
+E534 Drehzahl unter 24 Einh. ($8029.5)?
+E536 prüfen
+E539 ja - offener Regelkreis
+E53B Pumpe ein?
+E53E nein - offener Regelkreis
+E540 F81 defekt?
+E542 prüfen
+E545 ja - nach Druck
+E547 Schalteingänge
+E54A Vollast?
+E54C ja - Vollast
+E54E Druck über Kennlinie C2E0 ($8028.4)?
+E550 prüfen
+E553 nein - Teillast
+head E555
+|VOLLAST (F81 oder Druck über Kennlinie C2E0): offener Regelkreis.
+|Beim Kaltstart ist N7 mindestens ($8011 - 68). Bei Klopfsensorfehler oder
+|anhaltendem Klopfen ($807A.5) zusätzlich + 5 % (C556, Patch F750). Integrator = Mitte.
+E555 Grundwert N7
+E558 Warmstart?
+E55A prüfen
+E55D ja
+E55F Temperaturkorrektur
+E562 - 68
+E564 Grundwert kleiner?
+E565 ja - Korrektur nehmen
+E567 Grundwert
+E56A A = N7
+E56B Maske
+E56D Patch: Anreicherung bei Klopfen
+E570 Klopfsensoren in Ordnung? ja - ohne Zuschlag
+E572 + 5 % (C556)
+E575 kein Überlauf
+E577 100 %
+E579 Lambda-Integrator = Mitte ($5F00)
+E57C speichern
+E57F ausgeben (Anteil = B = $A0 aus Patch F750: +0,6 % zur Tabelle, mit Emulator geprüft)
+E582 Sondenunterbrechung?
+E585 prüfen
+E587 ja - offener Regelkreis
+E589 geschlossener Regelkreis?
+E58C prüfen
+E58E ja
+head E590
+|OFFENER REGELKREIS (Warmlauf, Sondenunterbrechung, Sonde nicht bereit): Integrator =
+|Mitte; N7 = Grundwert + Temperaturkorrektur. Beim Kaltstart kommt zur Korrektur
+|noch ein Anteil des Höhenfaktors hinzu (höher im Gebirge bedeutet weniger).
+|Einschalten des geschlossenen Regelkreises ($8060.6, löscht den aktuellen 2342): G62 unter
+|C547 = 63 (C527 = 95 bei Warmstart), keine Unterbrechung und Sonde bereit.
+E590 Mitte
+E593 Integrator
+E596 Grundwert
+E599 Korrektur
+E59C - 128
+E59E größer null - anfetten
+E5A0 abmagern: Betrag
+E5A1 Grundwert - Korrektur
+E5A2 nicht unter null
+E5A4 0
+E5A5 weiter
+E5A7 sichern
+E5A8 Warmstart?
+E5AA prüfen
+E5AD nein
+E5AF Grundwert
+E5B0 + Korrektur
+E5B2 Grundwert
+E5B3 Korrektur auf den Stack
+E5B4 Höhenfaktor
+E5B7 × Korrektur
+E5B8 X = Produkt
+E5B9 Korrektur
+E5BA + Korrektur
+E5BB D
+E5BC B = höherwertiges Byte: Korrektur × (Höhe + 1) / 256
+E5BD Grundwert
+E5C0 + Korrektur
+E5C1 über 100 %?
+E5C3 nein
+E5C5 100 %
+E5C7 $8057 = N7
+E5CA Flags
+E5CD Schwelle C547 = 63
+E5D0 Warmstart?
+E5D2 nein
+E5D4 C527 = 95
+E5D7 G62 unter der Schwelle (wärmer)?
+E5DA nein
+E5DC Sondenunterbrechung?
+E5DF prüfen
+E5E1 ja
+E5E3 Sonde bereit?
+E5E5 nein
+E5E7 geschlossener Regelkreis
+E5E9 aktuellen 2342 löschen
+E5EB speichern
+E5EE B = 0
+E5EF N7
+E5F2 ausgeben
+head E5F5
+|GESCHLOSSENER REGELKREIS: PI-Regler, Integrator $8059 (16 Bit, Mitte $5F00 = 0 %).
+|Sondenseite: G39 < 48 bedeutet mager, ≥ 52 fett, bei 48…51 wird N7 nicht neu berechnet.
+|Ein Seitenwechsel ergibt einen Sprung (Tabelle 4×4 C560 / C580 nach Druck C558 und Drehzahl
+|C55C; für HS +16, für CAL +128, Tabellen C5E0/C600). Ohne Wechsel ein Schritt
+|(C5A0 / C5C0, für CAL C620 / C640). Im Leerlauf Konstanten aus C6A4/C6A6.
+|Der erste Schritt nach Bereitschaft ist C6B0/C6B1 = 46. Sprünge und Schritte werden
+|mit $8214 / 256 multipliziert (Patch FA00). Fett: Integrator nach unten, mager: nach oben.
+|N7 = Grundwert + (Integrator - Mitte), 5…95 %; an den Grenzen wird der Integrator nachgeführt.
+E5F5 Anreicherung nach Druckanstieg?
+E5F7 prüfen
+E5FA ja - Integrator nicht ändern
+E5FC Drosselklappe geschlossen?
+E5FF ja
+E601 X = $8000
+E604 erster Schritt nach Bereitschaft?
+E607 nein
+E609 löschen
+E60C weiter
+E60E Integrator
+E611 zur N7-Berechnung
+E614 sichern
+E615 Druckachse C558
+E618 4 Punkte
+E61A Zeile
+E61D Drehzahlachse C55C
+E620 4 Punkte
+E622 Zelle 4×4
+E625 $805F
+E628 zurückholen
+E629 G39
+E62C + 2
+E62E unter 50 (G39 < 48)?
+E631 ja - mager
+E633 - 4
+E635 nicht unter 50 (G39 ≥ 52)?
+E638 ja - fett
+E63A in der Mitte - N7 nicht ändern
+E63D alte Seite
+E63E neue: mager
+E640 weiter
+E642 alte Seite
+E643 neue: fett
+E645 mit der alten vergleichen
+E647 Seite speichern
+E64A Seite gewechselt?
+E64B ja - Sprung
+E64D erster Schritt nach Bereitschaft?
+E64F prüfen
+E652 nein
+E654 C6B0
+E657 fett?
+E659 prüfen
+E65C ja
+E65E C6B1
+E661 weiter
+E663 Leerlaufschritt C6A6
+E666 Seite
+E669 fett
+E66B mager: +2
+E66C (ebenso)
+E66D HS?
+E670 nein
+E672 +1
+E673 Markt
+E676 BUND
+E678 CAL: +6
+E67A (ebenso)
+E67B Schritt
+E67D Drosselklappe geschlossen?
+E680 ja - dieser Schritt
+E682 Schritttabelle C5A0 (fett)
+E685 Seite
+E688 fett
+E68A C5C0 (mager)
+E68D Markt (0 / $80)
+E690 HS?
+E693 nein
+E695 +16
+E697 X -> Tabelle
+E698 Zelle
+E69B Patch: Schritt × $8214
+E69E Schritt
+E69F höherwertiges Byte 0 (kleiner Schritt)
+E6A0 weiter
+E6A2 X = $8000
+E6A5 „erster Schritt“ löschen
+E6A8 Leerlaufsprung C6A4
+E6AB Markt
+E6AE BUND
+E6B0 CAL: +6
+E6B2 (ebenso)
+E6B3 HS?
+E6B6 nein
+E6B8 +1
+E6B9 Sprung
+E6BB Drosselklappe geschlossen?
+E6BE Sprung in A
+E6BF ja - dieser
+E6C1 Sprungtabelle C560 (fett)
+E6C4 Seite
+E6C7 fett
+E6C9 C580 (mager)
+E6CC Markt
+E6CF HS?
+E6D2 nein
+E6D4 +16
+E6D6 X -> Tabelle
+E6D7 Zelle
+E6DA Patch: Sprung × $8214
+E6DD niederwertiges Byte 0 (großer Schritt in Prozent)
+E6DE $8010 = Schritt
+E6E1 Seite
+E6E4 fett?
+E6E5 Integrator
+E6E8 mager
+E6EA fett - nach unten
+E6ED nicht unter 0
+E6EF 0
+E6F0 (ebenso)
+E6F1 weiter
+E6F3 mager - nach oben
+E6F6 über $BE00?
+E6F8 nein
+E6FA Grenze
+E6FD $8059 = Integrator
+E700 - Mitte
+E703 nach oben - addieren
+E705 nach unten - Betrag
+E706 (ebenso)
+E708 (ebenso)
+E709 (ebenso)
+E70A Korrektur
+E70D (ebenso)
+E70E Grundwert
+E711 - Korrektur
+E714 nicht unter null
+E716 0
+E717 (ebenso)
+E718 nicht unter 5 %?
+E71A ja
+E71C Integrator nachführen: 100 - Grundwert
+E71E (ebenso)
+E721 (ebenso)
+E722 speichern
+E725 N7 = 0 (wird 5 %)
+E726 ausgeben
+E728 Grundwert + Korrektur
+E72B unter 95 %?
+E72D ja
+E72F Integrator nachführen: 190 - Grundwert
+E731 (ebenso)
+E734 (ebenso)
+E735 speichern
+E738 95 %
+head E73A
+|Ausgabe N7: + Zuschlag aus der Ruckeldämpfung ($8089), Grenzen 5…95 %, in Timertakte umgerechnet.
+E73A + Zuschlag
+E73D kein Überlauf
+E73F 100
+E741 über 95 %?
+E743 nein
+E745 95 %
+E747 weiter
+E749 unter 5 %?
+E74B nein
+E74D 5 %
+E74F Anteil = 0
+E750 Zwischenzelle
+E753 $805D = N7-Zeit in Takten
+E756 synchronisiert?
+E758 prüfen
+E75B ja
+E75D nein - zum Druck
+E760 Timer 2: Einstellung TCSR3 |= $53 (PWM N75) [Vermutung]
+E762 Interrupts sperren
+E763 (ebenso)
+E765 (ebenso)
+E767 Interrupts freigeben
+E768 X = $8000
+E76B G62
+E76E kälter als 30 (≈80 °C)?
+E770 ja
+E772 Zähler
+E775 + 1
+E776 50 (2 s)?
+E778 nein
+E77A 0
+E77B Zeit mit heißem Motor, in Schritten von 2 s ($80B1)
+E77E kein Überlauf
+E780 halten
+E783 speichern
+E786 $8066.5: Motor heiß
+E789 $8066.4 (heiße Luft unter Ladedruck)?
+E78C nein
+E78E $8066.5 löschen
+
+# ======================================================================
+# Task 2: LADEDRUCKREGELUNG N75 (E791-E98E)
+# ======================================================================
+head E791
+|N75 - LADEDRUCKREGELUNG. Tastverhältnis $8067 = 0…255 (0…100 %), ausgegeben
+|per Software-PWM im CMI-Interrupt an PORT2.6. Größeres Tastverhältnis bedeutet höheren Ladedruck [Vermutung].
+|Arbeitet nur, wenn ALLES zutrifft: Vollast (F81 geschlossen und in Ordnung), kein anhaltendes
+|Klopfen ($807A.5), keine G71-Fehler, keine Überhitzung (F76 offen, PORT5.7 = 1),
+|Endschalter F60 in Ordnung und offen. Sonst N75 = 0, und der Integrator wird vorab
+|aus dem Vorsteuerkennfeld C700 gesetzt (4×4: Druck C6F8, Drehzahl C6FC).
+|Ladedruck-SOLLWERT: Tabelle C718 nach Drehzahl (Achse C710 = 80 119 160 200 213 223 240 255):
+|174 178 176 177 179 179 178 176 (≈1,36…1,40 bar abs. [Vermutung Maßstab 128 = 1 bar]).
+|Regler: Integrator $8069 (16 Bit) + schneller Anteil aus der Regelabweichung + Korrektur
+|nach der Druckänderungsgeschwindigkeit ($806B).
+E791 Endschalter-Flags
+E794 F81 defekt?
+E796 ja - N75 ausschalten
+E798 Schalteingänge
+E79B Vollast (F81)?
+E79D nein - ausschalten
+E79F anhaltendes Klopfen ($807A.5)?
+E7A1 prüfen
+E7A4 ja - ausschalten
+E7A6 G71-Fehler
+E7A8 prüfen
+E7AB vorhanden - ausschalten
+E7AD Überhitzung (F76 schließt den Eingang: PORT5.7 = 0)?
+E7B0 ja - ausschalten
+E7B2 F60 defekt?
+E7B4 ja - ausschalten
+E7B6 Schalteingänge
+E7B9 F60 (Drosselklappe geschlossen)?
+E7BB nein - regeln
+E7BD N75 aus: „Überschwingen“ und „Anstieg“ löschen
+E7C0 G42
+E7C3 165 und mehr (kalte Luft)?
+E7C5 ja
+E7C7 warme Luft: Momentwert $806C = 0
+E7C8 speichern
+E7CB Druckachse C6F8 = 166 154 141 115
+E7CE 4 Punkte
+E7D0 Zeile
+E7D3 Drehzahlachse C6FC = 100 120 160 200
+E7D6 4 Punkte
+E7D8 Zelle
+E7DB Vorsteuerkennfeld C700
+E7DE Anfangswert des Integrators
+E7E1 heiße Luft unter Ladedruck ($8066.4)?
+E7E3 prüfen
+E7E6 ja - aus dem Kennfeld
+E7E8 Zeit mit heißem Motor
+E7EB 60 und mehr (≥ 120 s)?
+E7ED ja - aus dem Kennfeld
+E7EF sonst 102
+E7F1 Momentwert G42
+E7F4 146 und mehr (kalt)?
+E7F6 ja - belassen
+E7F8 - 51
+E7FA nicht unter null
+E7FC 0
+E7FD niederwertiges Byte 0
+E7FE Integrator
+E801 N75 = 0
+E802 speichern
+E805 Drehzahlachse C710
+E808 Drehzahl
+E80B 8 Punkte
+E80D Intervall suchen
+E810 Index
+E813 Anteil
+E816 A = Anteil
+E817 B = Index
+E81A Sollwert C718
+E81D X -> Wert
+E81E B = Anteil
+E81F Ladedruck-SOLLWERT
+E822 X = $8000
+E825 Sollwert - Druck
+E828 Unterschreitung - weiter
+E82A Überschreitung ($8066.6)
+E82D Betrag
+E82E weiter
+E830 Unterschreitung: $8066.6 = 0
+E833 $8010 = |Abweichung|
+E836 Integratorschritt C730 (Unterschreitung)
+E839 Bit 6 von Register B: hier steht in B der linke Stützpunkt der Sollwerttabelle C718[i] (nach INTERP), nicht das Überschreitungs-Flag
+E83B bei 174…179 ist Bit 6 = 0, also immer C730; Bit 6 = 1 bei Werten 64…127 und 192…255, dann C738
+E83D C738 (im Serienstand nicht ausgeführt; die Tabellen sind gleich)
+E840 Schritt nach |Abweichung|: Achse 12 8 4 0 -> 255 170 85 0
+E843 B = Schritt
+E844 höherwertiges Byte 0 (Schritt im niederwertigen Byte)
+E845 $8011
+E848 Überschreitung?
+E84A prüfen
+E84D nein - nach oben
+E84F Integrator
+E852 - Schritt
+E855 nicht unter 0
+E857 0
+E858 (ebenso)
+E859 weiter
+E85B Integrator
+E85E + Schritt
+E861 kein Überlauf
+E863 Grenze
+E866 Integrator speichern
+E869 schneller Anteil, Unterschreitung: C720 (Achse 40 27 13 0 -> 51 34 17 0)
+E86C Überschreitung?
+E86E prüfen
+E871 nein
+E873 Überschreitung: C728 (Achse 50 33 17 0 -> 153 102 51 0)
+E876 schneller Anteil nach |Abweichung|
+E879 Überschreitung?
+E87B prüfen
+E87E ja - subtrahieren
+E880 B = schneller Anteil
+E881 Integrator + schneller Anteil
+E884 Überlauf
+E886 über 255?
+E888 nein
+E88A 255
+E88C - schneller Anteil
+E88D Integrator nachführen (nicht über 100 % aufsummieren)
+E890 255
+E892 weiter
+E894 B = schneller Anteil
+E895 Integrator
+E898 - schneller Anteil
+E899 nicht unter 0
+E89B 0
+E89C Druck steigt ($8066.7)?
+E89E prüfen
+E8A1 ja - verringern
+E8A3 fällt: + $806B
+E8A6 kein Überlauf
+E8A8 255
+E8AA weiter
+E8AC steigt: - $806B
+E8AF nicht unter 0
+E8B1 0
+E8B2 niederwertiges Byte des Integrators
+E8B5 $8010 = Tastverhältnis (16 Bit)
+E8B8 Drehzahl
+E8BB 4 Punkte
+E8BD Achse C750 = 40 120 200 255
+E8C0 Intervall suchen
+E8C3 Index
+E8C4 Anteil
+E8C7 A = Anteil
+E8C8 B = Index
+E8C9 größtes Tastverhältnis C754 = 217 217 217 204 (≈85 %, 80 %)
+E8CC X -> Wert
+E8CD B = Anteil
+E8CE Grenze
+E8D1 $8012
+E8D4 Integrator
+E8D7 Tastverhältnis
+E8DA - Grenze
+E8DD nicht über der Grenze
+E8DF Integrator - Überschuss
+E8E0 nicht unter 0
+E8E2 0
+E8E3 Integrator speichern
+E8E6 Tastverhältnis
+E8E9 nicht über der Grenze?
+E8EC ja
+E8EE Grenze
+E8F1 niederwertiges Byte 0
+E8F2 speichern
+head E8F5
+|LADEDRUCKABSENKUNG nach Temperaturen, wird vom Tastverhältnis abgezogen:
+|nach G42 (Achse C758 = 185 175 165 137 -> C75C = 83 38 13 13; kälter bedeutet mehr;
+|zu G42 wird (Momentwert $806C - 146) addiert, wenn der Momentwert kalt ist)
+|plus nach G62 (Achse C760 = 216 … 21 -> C768 = 89 89 89 81 71 64 25 0; kalter
+|Motor bedeutet mehr), bei $8066.5 (Motor heiß) nach der Zeit mit heißem Motor
+|(~$80B1, Achse C770 -> C778 = 64 … 0). Laut SSP: unter +10 °C wird der Ladedruck abgesenkt,
+|eine Unterbrechung von G42 (−20 °C) hält den Ladedruck niedrig.
+|Der Integrator sinkt nicht unter die Absenkung. Ein Rest unter 224/65536 wird null.
+|Grenzen C7A9 = 0 … C7AA = 255.
+E8F5 G42
+E8F8 Momentwert G42
+E8FB - 146
+E8FD warm - ohne Zuschlag
+E8FF + zu G42
+E900 kein Überlauf
+E902 255
+E904 Achse C758
+E907 4 Punkte
+E909 Intervall suchen
+E90C Index
+E90D Anteil
+E910 A = Anteil
+E911 B = Index
+E912 Tabelle C75C
+E915 X -> Wert
+E916 B = Anteil
+E917 Absenkung nach Luft
+E91A $8012
+E91D G62
+E920 Achse C760
+E923 Motor heiß ($8066.5)?
+E925 prüfen
+E928 nein
+E92A Zeit mit heißem Motor
+E92D invertieren
+E92E Achse C770
+E931 8 Punkte
+E933 Intervall suchen
+E936 Index
+E937 Anteil
+E93A A = Anteil
+E93B Tabelle C768
+E93E heiß?
+E940 prüfen
+E943 nein
+E945 Tabelle C778
+E948 Index
+E949 X -> Wert
+E94A B = Anteil
+E94B Absenkung nach Motor
+E94E + nach Luft
+E951 kein Überlauf
+E953 255
+E955 $8012 = Absenkung
+E958 Integrator
+E95B nicht unter der Absenkung?
+E95E ja
+E960 auf die Absenkung anheben
+E963 speichern
+E966 Tastverhältnis
+E969 - Absenkung
+E96C unter null - 0
+E96E D nach X
+E96F unter 224/65536?
+E972 ja - 0
+E974 zurückholen
+E975 weiter
+E977 0
+E978 (ebenso)
+E979 nicht über C7AA = 255?
+E97C ja
+E97E 255
+E981 weiter
+E983 nicht unter C7A9 = 0?
+E986 ja
+E988 0
+E98B niederwertiges Byte 0
+E98C $8067 = Tastverhältnis N75
+head E98F
+|Druckanstieg in 40 ms ($8073, 0 bei Abfall oder G71-Fehler), für N17 und Patch F800.
+|$8208-$820B - Momentwerte von PORT2, PORT5, PORT6 und der Chip-Eingänge: werden im Programm nicht gelesen,
+|offenbar für den Tester (RAM-Auslesen) [Vermutung].
+E98F G71-Fehler
+E991 prüfen
+E994 vorhanden - 0
+E996 Druck
+E999 Druck des vorigen Aufrufs
+E99C merken
+E99F Zuwachs
+E9A0 Anstieg
+E9A2 Abfall oder Fehler - 0
+E9A3 $8073
+E9A6 PORT2
+E9A8 Momentwert
+E9AB PORT5
+E9AD Momentwert
+E9B0 PORT6
+E9B2 Momentwert
+E9B5 Chip-Eingänge
+E9B8 Momentwert
+E9BB Ende von Task 2 - zum Verteiler
+label E9BE TAB4_ERR
+head E9BE
+|TAB4_ERR - Tabelle X: Achse mit 4 Punkten (fallend), danach 4 Werte; Größe $8010.
+E9BE Größe
+E9C1 4 Punkte
+E9C3 X sichern
+E9C4 Intervall suchen
+E9C7 Index
+E9C8 Anteil
+E9CB A = Anteil
+E9CC B = Index
+E9CD X
+E9CE Werte nach der Achse
+E9D0 X -> Wert
+E9D1 B = Anteil
+E9D2 Interpolation
+E9D5 Rücksprung
+label E9D6 ROW4_MAP
+head E9D6
+|ROW4_MAP - Zeile eines 4×4-Kennfelds nach Druck (X = Achse): $8011 Index, $8013 Anteil.
+E9D6 Anzahl Punkte
+E9D7 Druck
+E9DA G71-Fehler
+E9DC prüfen
+E9DF nein
+E9E1 Ersatzwert
+E9E4 Anzahl Punkte
+E9E5 Intervall suchen
+E9E8 $8011
+E9EB Anteil
+E9EE $8013
+E9F1 Rücksprung
+label E9F2 COL4_RPM
+head E9F2
+|COL4_RPM - Spalte eines 4×4-Kennfelds nach Drehzahl: $8010 Index, $8012 Anteil; B = Zeile × 4 + Spalte.
+E9F2 Drehzahl
+E9F5 Intervall suchen
+E9F8 $8010
+E9FB Anteil
+E9FE $8012
+EA01 Zeile
+EA04 × 4
+EA05 (× 4)
+EA06 + Spalte
+EA09 Rücksprung
+label EA0A MAP4X4
+head EA0A
+|MAP4X4 - doppelte Interpolation 4×4 (X = Kennfeld, B = Zelle).
+EA0A X -> Zelle
+EA0B sichern
+EA0C Drehzahlanteil
+EA0F in der Zeile
+EA12 $8010
+EA15 nächste Zeile (+4)
+EA17 X
+EA18 X -> Zelle
+EA19 Anteil
+EA1C in der nächsten Zeile
+EA1F $8011
+EA22 zwei Werte
+EA25 Druckanteil
+EA28 zwischen den Zeilen
+EA2B Rücksprung
+
+head FA00
+|Werkspatch: $8214 ist der Multiplikator für Lambdasprünge und -schritte (/256).
+|Bei Drehzahl unter C84A = 120 Einh. und Druck unter C84B = 140 ist er 255 (volle Schritte);
+|sonst sinkt er um 5 (C84D) pro Aufruf bis 64 (C84C), die Schritte sind also 4-mal kleiner
+|bei hoher Drehzahl und Last.
+FA00 X = $8000
+FA03 255
+FA05 Drehzahl
+FA07 120 und mehr?
+FA0A ja - verringern
+FA0C Druck
+FA0E G71-Fehler?
+FA11 nein
+FA13 Ersatzwert
+FA16 140 und mehr?
+FA19 nein - 255
+FA1B Multiplikator
+FA1E - 5
+FA21 nicht unter 64?
+FA24 ja
+FA26 64
+FA29 $8214
+FA2C Drehzahl
+FA2E zurück
+table FA31 1 leeres Byte
+head FA32
+|Patch: Lambdasprung × $8214 / 256.
+FA32 Sprung aus dem 4×4-Kennfeld
+FA35 Multiplikator
+FA38 ×
+FA39 zurück
+table FA3C 4 leere Bytes
+head FA40
+|Patch: Lambdaschritt × $8214 / 256.
+FA40 Schritt aus dem 4×4-Kennfeld
+FA43 Multiplikator
+FA46 ×
+FA47 zurück
+
+# ======================================================================
+# RESET (RES, SWI, TRAP, NMI-Störung): Einrichtung, RAM-Prüfung, Hintergrundschleife
+# (CA88-CB90)
+# ======================================================================
+label CA88 RESET
+head CA88
+|RESET. Stack $8290. Ein vollständiger Reset prüft das RAM ab $8000; ein Neustart nach
+|Motorstillstand (D12A) ab $8005, um die Codes ($8000-$8002) und den
+|Luftdruck ($8004) zu erhalten.
+|Prozessorregister: RMCR = $06 (SCI-Geschwindigkeit [?]), RP5CR = $C1 (internes RAM,
+|IRQ1), TRCSR1 = $1A (Empfang, Senden, Empfangsinterrupt), TCSR1 = $18 (Interrupts
+|Capture und Compare 1 [Vermutung]), TCSR2 = $09 (Ausgang OC1 = N7 [Vermutung]), PORT2 = $20,
+|PORT6 = $20 (N17 geschlossen, Pumpe aus), P2DDR = $02 (P21-P27 Ausgänge),
+|P6DDR = $F9 (P62, P61 sind Eingänge: Codierung, Hall).
+CA88 Stack
+CA8B RAM-Prüfung ab $8000
+CA8E RMCR
+CA90 SCI-Geschwindigkeit
+CA92 RP5CR = $C1
+CA94 alter Wert (Bit 7 = RAM-Versorgung blieb erhalten)
+CA96 speichern
+CA98 SCI: Empfang, Senden, Empfangsinterrupt
+CA9A speichern
+CA9C Timer 1
+CA9E speichern
+CAA0 Timer 1, Teil 2
+CAA2 speichern
+CAA4 PORT2.5 = 1
+CAA6 speichern
+CAA8 PORT6.5 = 1 (N17 geschlossen), PORT6.6 = 0 (Pumpe aus)
+CAAA speichern
+CAAC P21-P27 sind Ausgänge
+CAAE speichern
+CAB0 P60, P63-P67 sind Ausgänge
+CAB2 speichern
+CAB4 Beginn der RAM-Prüfung
+CAB5 alter RP5CR
+CAB6 Chip-Einrichtungstabelle CB91 (Paare Nummer/Wert)
+CAB9 Paar
+CABB in den Chip schreiben
+CABE nächstes
+CABF (+2)
+CAC0 alle 16?
+CAC3 nein
+CAC5 alter RP5CR
+CAC6 Versorgung des internen RAM erhalten?
+CAC7 nein - Fehlerkopie unzuverlässig
+CAC9 Fehlerkopie
+CACC Prüfsumme = 0
+CACD + Byte
+CACF nächstes
+CAD0 bis $45
+CAD3 wiederholen
+CAD5 Prüfsumme stimmt?
+CAD7 nein
+CAD9 Anfang
+CADA Muster $55 und $AA
+CADD $55 schreiben
+CADF zurückgelesen?
+CAE1 nein - RAM defekt
+CAE3 $AA schreiben
+CAE5 zurückgelesen?
+CAE7 nein - RAM defekt
+CAE9 löschen
+CAEB nächstes
+CAEC bis $8290
+CAEF wiederholen
+CAF1 Codes aus der Kopie zurückholen
+CAF3 (ebenso)
+CAF6 (ebenso)
+CAF8 (ebenso)
+CAFB (ebenso)
+CAFD (ebenso)
+CB00 Startzähler
+CB02 (ebenso)
+CB05 $802C
+CB07 (ebenso)
+CB0A internes RAM prüfen
+CB0C Anfang
+CB0D Muster
+CB10 $55 schreiben
+CB12 zurückgelesen?
+CB14 nein - defekt
+CB16 $AA schreiben
+CB18 zurückgelesen?
+CB1A nein - defekt
+CB1C löschen
+CB1E nächstes
+CB1F Ende des internen RAM ($0100)?
+CB22 ja - fertig
+CB24 Ende des externen RAM?
+CB27 nein
+CB29 weiter mit internem $40-$FF
+CB2C prüfen
+CB2E RAM defekt: Steuergerätefehler (1111)
+CB30 speichern
+CB33 internes RAM ausschalten
+CB36 Betriebsart: Start ($A8)
+CB38 speichern
+CB3B Startwinkel 50
+CB3E × 0,75
+CB40 (ebenso)
+CB41 runden
+CB42 (ebenso)
+CB44 ausgegebener Winkel
+CB47 K-Leitungs-Timeout läuft nicht
+CB49 speichern
+CB4C Winkelgrenze 108
+CB4E speichern
+CB51 Verstärkung 8
+CB53 Verstärker-Latch
+CB56 Mitte
+CB59 Lambda-Integrator
+CB5C Chip
+CB5F Statusregister $1F
+CB61 auswählen
+CB63 Status
+CB65 Chip bereit (Bit 5)?
+CB67 nein - warten
+CB69 Ereignismaske: Zylinder und Tick
+CB6C lokal
+CB6F speichern
+CB71 Chip-Betriebsart $25 (Synchronisationssuche)
+CB74 speichern
+CB76 alle Ereignisse löschen
+CB79 speichern
+CB7B Interrupts freigeben
+label CB7C BG_LOOP
+head CB7C
+|HINTERGRUNDSCHLEIFE: die gesamte von Interrupts freie Zeit dient der ROM-Prüfsumme.
+|Die Summe aller Bytes $C000-$FFFF (8 Bit) muss 0 sein, sonst Steuergerätefehler 1111
+|($8095.6). Jede Änderung der Software muss diese Summe erhalten.
+CB7C ROM-Anfang
+CB7F Prüfsumme = 0
+CB80 + Byte
+CB82 nächstes
+CB83 bis $FFFF
+CB85 Prüfsumme 0?
+CB86 ja - von vorn
+CB88 X = $8000
+CB8B ROM-Fehler (1111)
+CB8E von vorn
+table CB90 1 Byte $0A ohne Verweise, vermutlich Ausgleich der ROM-Prüfsumme auf 0 [Vermutung]
+table CB91 32 Chip-Einrichtung $0100 (Nummer, Wert): 00 FF, 01 6C (108 Halbzähne = 144°), 02 2D, 03 1B, 05 00, 06 05, 07 06, 08 03, 09 FF, 0A FF, 0B 00, 0C 33, 0D 76, 18 04, 19 00, 1F 00
+E39E Sondenunterbrechung - ohne Lambda
+DD03 Ende von Task 0 - zum Verteiler
+
+# ======================================================================
+# Timer-, SCI- und IRQ2-Interrupts (F5DC-F725), Testende (F726)
+# ======================================================================
+label F5DC OCF
+head F5DC
+|OCF - Compare von Timer 1.
+|OC1: PWM für N7 an Pin P21 (Kontakt 8). Periode 21400 E-Takte (1,536 MHz) =
+|71,8 Hz. Ein für $805D Takte, aus für 21400 - $805D; der Ausgangspegel
+|schaltet selbst um (OLVL1).
+|OC2: alle 7812 Takte (5,09 ms) ein Schritt der langsamen PWM für N80: 32 Schritte = 163 ms,
+|in den ersten $8064 Schritten ist Chipregister $0B = FF (N80 offen), in den übrigen 00.
+F5DC Timerstatus, Teil 2
+F5DE Compare 2?
+F5E0 ja - N80
+F5E2 lesen (löscht das OC1-Flag)
+F5E4 „Ein“-Zeit
+F5E7 jetzt Pegel 1?
+F5EA ja - nächste Flanke nach „Ein“
+F5EC Periode 21400
+F5EF - „Ein“ = „Aus“
+F5F2 Pegel beim nächsten Vergleich umschalten
+F5F5 + zum Vergleichszeitpunkt
+F5F7 neuer Zeitpunkt
+F5F9 verlassen
+F5FA Timerzähler
+F5FC + 7812 (5,09 ms)
+F5FF nächster Compare 2
+F601 PWM-Schritt N80
+F604 32?
+F606 ja - von vorn
+F608 unter dem Tastverhältnis?
+F60B ja - offen
+F60D geschlossen: 00
+F60F weiter
+F611 Schritt 0
+F612 Tastverhältnis
+F615 null - geschlossen
+F617 offen: FF
+F619 Schritt + 1
+F61A speichern
+F61D synchronisiert?
+F61F prüfen
+F622 nein - nicht ändern
+F624 Chipregister $0B (N80)
+F626 speichern
+F629 verlassen
+label F62A CMI
+head F62A
+|CMI - Vergleich von Timer 2: Software-PWM für N75 an PORT2.6 (Kontakt 19).
+|Die „Ein“-Phase dauert $8067 Zählschritte von Timer 2, die „Aus“-Phase 255 - $8067.
+|0 bedeutet immer aus, 255 immer ein. Die Frequenz hängt vom Vorteiler von Timer 2 ab
+|(TCSR3, E760) [?].
+F62A Vergleichsflag löschen
+F62D Port 2
+F62F N75 jetzt ein?
+F631 ja
+F633 Tastverhältnis
+F636 0 - aus lassen
+F638 255?
+F63A ja - dauerhaft einschalten
+F63C einschalten
+F63E speichern
+F640 „Ein“-Zeit
+F643 in den Timer
+F645 Tastverhältnis
+F648 255?
+F64A ja - ein lassen
+F64C ausschalten
+F64E speichern
+F650 255
+F652 - Tastverhältnis = „Aus“
+F655 in den Timer
+F657 ausschalten
+F659 speichern
+F65B einschalten
+F65D speichern
+F65F Phasendauer in Timer 2
+label F661 TOF
+head F661
+|TOF und das leere Ende von CMI tun nichts.
+F661 verlassen
+label F662 IRQ2
+head F662
+|IRQ2 - einmalige Messung [?]: IRQ2 ausschalten, $80F4 = |Chip-Reg. $00 - 94|.
+|IRQ2 wird bei CDF9 freigegeben (Hall hoch und $806E.4). $80F4 wird von der Lampe
+|im Testermodus verwendet (F49D).
+F662 IRQ2 ausschalten
+F665 Register $00
+F667 auswählen
+F66A lesen
+F66D - 94
+F66F nicht unter null
+F671 Betrag
+F672 $80F4
+F675 verlassen
+label F676 ICF
+head F676
+|ICF - Capture an P20 (Eingang Tin): BEZUGSMARKE G4 (einmal pro Kurbelwellenumdrehung) [Vermutung nach Logik].
+|$8095.4 - Marke kam (für die Prüfung „540 Zähne ohne Marke“, D352).
+|Die ersten 3 Marken prüfen G4 ($8095.0). Danach, nicht im Start, muss das Hallsignal
+|von Marke zu Marke wechseln (Phase $8095.2): 2-mal zur falschen Zeit hoch ergibt 2113
+|($8094 Bits 3, 2), 3-mal zur falschen Zeit niedrig ergibt 2113 (Bits 1, 0).
+|Eine Marke ohne Zähne zwischen den Marken ($8095.3 nicht gesetzt) 2-mal ergibt 2111 G28 ($8094 Bits 7, 6).
+F676 X = $8000
+F679 Marke kam ($8095.4)
+F67C G4 schon geprüft?
+F67F ja
+F681 „Zähne schon gekommen“
+F684 Stellglieddiagnose verlassen
+F687 Markenzähler
+F689 schon 2?
+F68B ja - G4 geprüft
+F68D + 1
+F68E speichern
+F690 verlassen
+F692 G4 geprüft ($8095.0)
+F695 0
+F696 speichern
+F698 Start?
+F69B ja - Hall nicht prüfen
+F69D Hall hoch?
+F6A0 nein
+F6A2 niedrig erwartet (Phase)?
+F6A5 nein - Phase richtig
+F6A7 Abweichungszähler
+F6A9 + 1
+F6AA speichern
+F6AC unter 2?
+F6AE ja
+F6B0 Hallfehler (2113)
+F6B3 weiter
+F6B5 Verdacht löschen
+F6B8 1
+F6BA speichern
+F6BC Phase: als Nächstes niedrig
+F6BF weiter
+F6C1 hoch erwartet?
+F6C4 nein - Phase richtig
+F6C6 Abweichungszähler
+F6C8 + 1
+F6C9 speichern
+F6CB unter 3?
+F6CD ja
+F6CF Hallfehler (2113)
+F6D2 weiter
+F6D4 Verdacht löschen
+F6D7 1
+F6D9 speichern
+F6DB Phase: als Nächstes hoch
+F6DE Zähne zwischen den Marken gekommen ($8095.3)?
+F6E1 nein
+F6E3 Verdacht G28 löschen
+F6E6 „Zähne gekommen“ löschen
+F6E9 Zähler = 0
+F6EB Marken ohne Zähne
+F6ED + 1
+F6EE unter 2?
+F6F0 ja
+F6F2 Fehler G28 (2111)
+F6F5 0
+F6F6 speichern
+F6F8 Capture-Flag löschen
+F6FA (ICR lesen)
+F6FC verlassen
+label F6FD SCI
+head F6FD
+|SCI - Empfangsinterrupt der K-Leitung [?]. Ist es Zeit zu senden ($80F7.6), löschen;
+|sonst, wenn die Synchronbytes gesendet sind und noch kein Byte wartet, markieren ($80F6.4).
+|Dann diesen Interrupt ausschalten und das empfangene Byte verwerfen (das eigene Echo auf
+|der Eindraht-K-Leitung [Vermutung]). Der eigentliche Empfang erfolgt per Abfrage in Task 0.
+F6FD Byte empfangen?
+F700 nein
+F702 Kommunikations-Flags
+F705 Zeit zu senden?
+F707 ja
+F709 Sitzungszustand
+F70C Synchronbytes nicht gesendet - verwerfen
+F70E Byte wartet schon?
+F710 ja - verlassen
+F712 markieren
+F714 speichern
+F717 weiter
+F719 „Zeit zu senden“ löschen
+F71B speichern
+F71E Empfangsinterrupt ausschalten
+F721 Status lesen
+F723 Byte verwerfen
+F725 verlassen
+label F726 TEST_EXIT
+head F726
+|TEST_EXIT - der Motor dreht (oder der Test ist beendet): einmalig $8003.4 setzen
+|und den Zustand von Blinkcode und Stellglieddiagnose zurücksetzen.
+F726 X sichern
+F727 X = $8000
+F72A schon?
+F72D ja
+F72F $8003.4
+F732 0
+F733 0
+F734 Ausgabezustand
+F736 Timer
+F738 Testschritt
+F73A N17-Zähler
+F73C Phasentimer, Testteiler
+F73E Schließzeit Kontakt 5
+F740 X zurückholen
+F741 Rücksprung
+table F742 14 leer (FF)
+head F750
+|Patch zu E56D: +5 % zu N7 bei Vollast bei anhaltendem Klopfen ($807A.5)
+|oder bei defektem Klopfsensor ($80B6 Bits 7, 5).
+F750 anhaltendes Klopfen?
+F753 ja - +5 % (F75D)
+F755 Klopfsensorfehler
+F757 prüfen
+F75A vorhanden - +5 %, keiner - ohne Zuschlag
+F75D +5 %
+
+# ======================================================================
+# DATENTABELLEN (C000-CA04), leere Bereiche und Vektoren
+# ======================================================================
+table C000 256 ZÜNDKENNFELD 1 (Super, warmer Motor), 16×16: Zeilen sind Druck (C200), Spalten Drehzahl (C210); 1 Einh. ≈ 1°, größer bedeutet später [Vermutung]
+table C100 256 ZÜNDKENNFELD 2 (kalter Motor / anhaltendes Klopfen), 16×16
+table C200 16 Druckachse der Zündkennfelder (fallend): 192 … 51
+table C210 16 Drehzahlachse (gemeinsam): 40 53 67 80 93 107 120 133 147 160 173 187 200 213 220 240
+table C220 16 Überladedruckgrenze nach Drehzahl (ED78)
+table C230 16 Halten der Spätverstellung nach Klopfen, in Ereignissen, nach Drehzahl (DDE8)
+table C240 16 Timer für den Abbau der Spätverstellung, in Ereignissen, nach Drehzahl (DDF8)
+table C250 16 Drehzahlachse für den Leerlaufwinkel (DF05)
+table C260 16 Leerlaufwinkel über 890 U/min
+table C270 16 Drehzahlachse der Ruckeldämpfung (E129)
+table C280 16 N7-Zuschlag bei Ruckeldämpfung
+table C290 16 Winkel-Spätverstellung bei Ruckeldämpfung
+table C2A0 16 Winkel-Rückführschritt bei Ruckeldämpfung
+table C2B0 4 Luftdruckachse (Höhe): 128 122 109 102
+table C2B4 4 N17 im Start: Ticks offen nach Höhe: 255 20 10 5
+table C2B8 4 N17 im Start: Ticks geschlossen nach Höhe: 0 5 10 10
+table C2BC 4 N17: Höhenfaktor 4 3 2 1
+table C2C0 4 Achse der Laufzeit (Schritt 5,12 s) für die Winkelkorrektur: 24 28 35 47
+table C2C4 4 Winkelkorrektur nach Zeit: 10 8 8 0
+table C2C8 4 leer (FF)
+table C2CC 4 G62-Achse für die Leerlauf-Winkelkorrektur: 197 189 180 158
+table C2D0 16 Leerlauf-Winkelkorrektur 4×4 (Höhe × G62)
+table C2E0 16 Druckkennlinie nach Drehzahl: darüber Vollastbetrieb für N7 (ED97)
+table C2F0 16 N7-Zuschlag nach Druckanstieg, nach Drehzahl
+table C300 256 KENNFELD N7, %, 16×16: Zeilen sind Druck (C500), Spalten Drehzahl (C510)
+table C400 256 KENNFELD N7 bei Sondenunterbrechung, 16×16
+table C500 16 Druckachse der N7-Kennfelder: 255 173 169 … 38 0
+table C510 16 Drehzahlachse der N7-Kennfelder: 40 53 67 80 93 107 120 133 147 160 173 187 200 220 240 255
+table C520 16 N7-Korrektur nach G62, Warmstart: Achse 8 Punkte + 8 Werte (128 = keine Korrektur)
+table C530 16 N7-Korrektur nach G62, Warmstart und Sondenunterbrechung
+table C540 16 N7-Korrektur nach G62, Kaltstart
+table C550 4 Höhenfaktor für N7: 255 229 204 191
+table C554 4 Konstanten: 120 (Drehzahl), 128 (Druck) für die Winkelkorrektur; 5 (% Anreicherung bei Klopfen); 4 (Spätverstellung bei Hallfehler)
+table C558 4 Lambda-Druckachse: 129 102 76 51
+table C55C 4 Lambda-Drehzahlachse: 40 64 88 112
+table C560 32 Lambdasprung zur Seite „fett“, 4×4: AT und HS (BUND)
+table C580 32 Lambdasprung zur Seite „mager“, 4×4: AT und HS (BUND)
+table C5A0 32 Lambdaschritt „fett“ (BUND)
+table C5C0 32 Lambdaschritt „mager“ (BUND)
+table C5E0 32 Sprung „fett“ (CAL)
+table C600 32 Sprung „mager“ (CAL)
+table C620 32 Schritt „fett“ (CAL)
+table C640 32 Schritt „mager“ (CAL)
+table C660 4 N17: Achse der niedrigsten Temperatur: 216 205 169 90
+table C664 4 N17: Startdauer × 10 Ticks: 120 50 10 0
+table C668 4 N17: Achse für $8079: 216 169 123 90
+table C66C 4 N17: $8079: 214 154 79 29
+table C670 4 N17 nach dem Start: Achse 211 205 189 169
+table C674 4 N17 nach dem Start: × 10 Ticks: 30 20 10 0
+table C678 8 N17: Achse des Druckzuwachses
+table C680 8 N17: Öffnungszeit nach Zuwachs
+table C688 8 N17: Anreicherungsmerkmal nach Zuwachs
+table C690 4 N17: G62-Achse für die Gewichte
+table C694 4 N17: Gewicht 1
+table C698 4 N17: Gewicht 2
+table C69C 4 G42-Achse für die Winkelkorrektur unter Ladedruck: 204 156 128 109
+table C6A0 4 Winkelkorrektur nach G42 (+60): 60 60 61 62
+table C6A4 14 Lambdasprünge und -schritte im Leerlauf (AT/HS × BUND/CAL) und erster Schritt (C6B0/C6B1)
+table C6B2 44 Konstanten für Gemisch, Start, Drehzahl, Klopfen (Schwellen 189, 80 %, 50 %, 40 %, Sondenband 58/32, … siehe Verweise im Code)
+table C6DE 2 Schwellen „warm“ (39) und „Last“ (90)
+table C6E0 4 Drehzahlachse für die Rückkehr zu Kennfeld 1
+table C6E4 4 Zeit bis zur Rückkehr zu Kennfeld 1 (× 5,12 s)
+table C6E8 4 Achse der niedrigsten Temperatur für die Verzögerung nach dem Start
+table C6EC 4 Verzögerung nach dem Start (Aufrufe von Task 3)
+table C6F0 4 G42-Achse für den Zuschlag zur Überladedruckgrenze
+table C6F4 4 Zuschlag zur Überladedruckgrenze: 26 26 26 0
+table C6F8 4 N75: Druckachse der Vorsteuerung
+table C6FC 4 N75: Drehzahlachse der Vorsteuerung
+table C700 16 N75: Vorsteuerung 4×4
+table C710 8 N75: Drehzahlachse des Sollwerts
+table C718 8 N75: LADEDRUCK-SOLLWERT nach Drehzahl: 174 178 176 177 179 179 178 176
+table C720 8 N75: schneller Anteil bei Unterschreitung (Achse 4 + Werte 4)
+table C728 8 N75: schneller Anteil bei Überschreitung
+table C730 8 N75: Integratorschritt bei Unterschreitung
+table C738 8 N75: Integratorschritt bei Überschreitung
+table C740 8 Druckanstiegsgeschwindigkeit -> $806B
+table C748 8 Druckabfallgeschwindigkeit -> $806B
+table C750 4 N75: Drehzahlachse der Tastverhältnisgrenze
+table C754 4 N75: größtes Tastverhältnis: 217 217 217 204
+table C758 4 N75: G42-Achse der Absenkung
+table C75C 4 N75: Absenkung nach G42: 83 38 13 13
+table C760 8 N75: G62-Achse der Absenkung
+table C768 8 N75: Absenkung nach G62
+table C770 8 N75: Achse der Zeit mit heißem Motor
+table C778 8 N75: Absenkung nach der Zeit mit heißem Motor
+table C780 48 Diagnose- und Schutzkonstanten (Schwellen für Sensoren, Druck, Drehzahl, Zeit; siehe Verweise im Code)
+table C7B0 8 N80: Druckachse (8 Punkte)
+table C7B8 8 N80: Drehzahlachse
+table C7C0 64 N80: Spülkennfeld 8×8 (0…31 von 32)
+table C800 64 N80: Spülkennfeld bei $8066.1
+table C840 16 Konstanten für N115 und G71 (48/58 Umdr., 50 Aufrufe, 4, …, 120/140/64/5 für Patch FA00)
+table C850 16 Drehzahlachse der Klopfparameter
+table C860 16 Beginn des Klopffensters [Vermutung]
+table C870 16 Länge des Klopffensters [Vermutung]
+table C880 16 untere Grenze der Klopfmessung
+table C890 16 Schwelle „Sensor stumm“
+table C8A0 16 Maßstab der Klopfmessung
+table C8B0 16 Drehzahlachse der Klopfschwellen
+table C8C0 80 Klopfschwellen f, 5 Zylinder × 16
+table C910 5 Klopfsensor nach Zylindernummer (0 = G61, FF = G66)
+table C915 3 Klopfen: Grundpegelschritt (2 Bytes), Glättungsgewicht
+table C918 8 Spannungsachse für den Schließwinkel der Zündspule
+table C920 8 Schließzeit der Zündspule T
+table C928 48 BLINKCODES der Fehler (24 Codes, Bitreihenfolge $8000.7 … $8002.0)
+table C958 14 BLINKCODES der Stellglieddiagnose: 4433 4441 4442 4443 4343 4331 0000
+table C966 72 Fehlercodes für die K-Leitung: 24 × (VAG-Nummer, Merkmal)
+table C9AE 21 Stellgliednummern für die K-Leitung: 01259 01261 01262 01263 01247 01241 00767
+table C9C3 66 Identifikation (ASCII): „447905383L “, „Motor      “, „PMC AT/CAL.“, „PMC AT/BUND“, „PMC HS/CAL.“, „PMC HS/BUND“
+table D092 1 totes Byte (unter dem Patch verblieben)
+table F7D6 10 leer (FF)
+table F7E0 8 Patch F800: Achse des Druckzuwachses
+table F7E8 8 Patch F800: Spätverstellung
+table F7F0 3 Patch F800: G62-Schwelle 63, Dauer 25, Multiplikator 10
+table F7F3 13 leer (FF)
+table F86F 1 leer
+table F879 7 leer
+table F889 7 leer
+table F89C 4 leer
+table F8AC 4 leer
+table F8CB 5 leer
+table F8E1 15 leer
+table F914 12 leer
+table F92E 2 leer
+table F942 190 leer (FF)
+table FA4A 1436 leer (FF), freier Platz
+table FFE6 4 4 Bytes vor den Vektoren: 6F 10 14 01 [?] (über die K-Leitung auslesbar)
+table FFEA 22 VEKTOREN: IRQ2 F662, CMI F62A, TRAP CA88, SCI F6FD, TOF F661, OCF F5DC, ICF F676, IRQ1 CBB1, SWI CA88, NMI F5A3, RES CA88

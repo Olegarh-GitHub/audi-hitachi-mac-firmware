@@ -1,3 +1,5 @@
+**Русский** · [English](README.en.md) · [Deutsch](README.de.md)
+
 # Hitachi MAC-14 и MAC-12D
 
 Дампы прошивок блоков управления Hitachi MAC-14 и MAC-12D и их листинги с комментариями на русском.
@@ -11,7 +13,7 @@
 
 ## Состав
 
-- `docs/asm/*.lst` — листинги.
+- `docs/asm/*.lst` — листинги. Листинг MAC-14 на английском и немецком: `docs/asm/en/`, `docs/asm/de/`.
 - `docs/asm/*.notes` — разметка, из которой собирается листинг. Формат описан в `docs/asm/NOTES_FORMAT.md`.
 - `src/*_pinout.md` — распиновки блоков, процессора и EPROM.
 - `tools/lst6303.py` — дизассемблер HD6303.

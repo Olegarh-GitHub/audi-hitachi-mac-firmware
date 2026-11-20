@@ -4734,7 +4734,7 @@ D044 nein
 D046 nächster ist der erste
 D049 Differenz der Rücknahmen
 D04A $8056 — Korrektur Schließwinkelbeginn
-D04D + Winkel
+D04D + Winkel: die Klopfrücknahme wird addiert, ein größerer Wert bedeutet also späteren Zündzeitpunkt
 D050 unter null?
 D051 ja — Minimum
 D053 später als 45?
@@ -6319,7 +6319,7 @@ F75D +5 %
 # ======================================================================
 # DATENTABELLEN (C000-CA04), leere Bereiche und Vektoren
 # ======================================================================
-table C000 256 ZÜNDKENNFELD 1 (Super, warmer Motor), 16×16: Zeilen sind Druck (C200), Spalten Drehzahl (C210); 1 Einh. ≈ 1°, größer bedeutet später [Vermutung]
+table C000 256 ZÜNDKENNFELD 1 (Super, warmer Motor), 16×16: Zeilen sind Druck (C200), Spalten Drehzahl (C210); 1 Einh. ≈ 1°, größer bedeutet später (laut Code: die Klopfrücknahme wird zum Winkel addiert, D04D)
 table C100 256 ZÜNDKENNFELD 2 (kalter Motor / anhaltendes Klopfen), 16×16
 table C200 16 Druckachse der Zündkennfelder (fallend): 192 … 51
 table C210 16 Drehzahlachse (gemeinsam): 40 53 67 80 93 107 120 133 147 160 173 187 200 213 220 240

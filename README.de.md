@@ -43,8 +43,8 @@ python3 -I tools/lst6303.py src/MAC-14.BIN docs/asm/de/MAC-14.notes --lang=de > 
 
 Vermutungen sind in den Kommentaren mit `[Vermutung]` gekennzeichnet, Unbekanntes mit `[?]`. Die Tick-Länge (≈ 10 ms)
 und der Drehzahlmaßstab (≈ 22 U/min pro Einheit) sind aus dem Code abgeleitet und nicht am Fahrzeug gemessen.
-Ebenso abgeleitet sind die Einheit der Zündkennfelder (1° pro Einheit) und die Richtung „größerer Wert = späterer
-Zündzeitpunkt“; mit der Stroboskoplampe ist das nicht geprüft. Der Typ des externen Bausteins an $0100/$0101 ist unbekannt.
+Auch die Einheit der Zündkennfelder (1° pro Einheit) ist aus dem Code abgeleitet. Dass ein größerer Wert einen späteren
+Zündzeitpunkt bedeutet, folgt aus dem Code: die Klopfrücknahme wird zum Winkel addiert. Mit der Stroboskoplampe ist das nicht geprüft. Der Typ des externen Bausteins an $0100/$0101 ist unbekannt.
 
 Die englischen und deutschen Kommentare sind aus dem russischen Original übersetzt; maßgeblich sind die russischen Dateien.
 

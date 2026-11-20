@@ -57,7 +57,7 @@
 ; $10 N17, $08 N80, $04 N115 (geprüft für N7, N75, N17, N80, N115).
 ;------------------------------------------------------------------------------
 
-; Tabelle $C000, 256 Bytes: ZÜNDKENNFELD 1 (Super, warmer Motor), 16×16: Zeilen sind Druck (C200), Spalten Drehzahl (C210); 1 Einh. ≈ 1°, größer bedeutet später [Vermutung]
+; Tabelle $C000, 256 Bytes: ZÜNDKENNFELD 1 (Super, warmer Motor), 16×16: Zeilen sind Druck (C200), Spalten Drehzahl (C210); 1 Einh. ≈ 1°, größer bedeutet später (laut Code: die Klopfrücknahme wird zum Winkel addiert, D04D)
   C000  db 2B 29 29 29 29 29 28 29 29 28 27 25 25 23 21 1F
   C010  db 2B 29 29 29 29 29 28 29 29 28 27 25 25 23 21 1F
   C020  db 2B 29 29 29 29 29 28 29 29 28 27 25 24 22 20 1E
@@ -1520,7 +1520,7 @@ loc_D049:
 
 loc_D04A:
   D04A  B7 80 56   STAA  $8056          ; $8056 — Korrektur Schließwinkelbeginn
-  D04D  FB 80 7D   ADDB  $807D          ; + Winkel
+  D04D  FB 80 7D   ADDB  $807D          ; + Winkel: die Klopfrücknahme wird addiert, ein größerer Wert bedeutet also späteren Zündzeitpunkt
   D050  5D         TSTB                 ; unter null?
   D051  2B 16      BMI   loc_D069       ; ja — Minimum
   D053  F1 C6 CE   CMPB  $C6CE          ; später als 45?

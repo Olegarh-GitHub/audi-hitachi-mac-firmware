@@ -57,7 +57,7 @@
 ; $10 N17, $08 N80, $04 N115 (verified for N7, N75, N17, N80, N115).
 ;------------------------------------------------------------------------------
 
-; table $C000, 256 bytes: IGNITION MAP 1 (Super, warm engine), 16×16: rows are pressure (C200), columns are rpm (C210); 1 unit ≈ 1°, larger means later [assumed]
+; table $C000, 256 bytes: IGNITION MAP 1 (Super, warm engine), 16×16: rows are pressure (C200), columns are rpm (C210); 1 unit ≈ 1°, larger means later (from the code: knock retard is added to the angle, D04D)
   C000  db 2B 29 29 29 29 29 28 29 29 28 27 25 25 23 21 1F
   C010  db 2B 29 29 29 29 29 28 29 29 28 27 25 25 23 21 1F
   C020  db 2B 29 29 29 29 29 28 29 29 28 27 25 24 22 20 1E
@@ -1520,7 +1520,7 @@ loc_D049:
 
 loc_D04A:
   D04A  B7 80 56   STAA  $8056          ; $8056 — dwell start correction
-  D04D  FB 80 7D   ADDB  $807D          ; + timing
+  D04D  FB 80 7D   ADDB  $807D          ; + timing: knock retard is added, so a larger value means a later spark
   D050  5D         TSTB                 ; below zero?
   D051  2B 16      BMI   loc_D069       ; yes — minimum
   D053  F1 C6 CE   CMPB  $C6CE          ; later than 45?

@@ -4734,7 +4734,7 @@ D044 no
 D046 next is the first
 D049 retard difference
 D04A $8056 — dwell start correction
-D04D + timing
+D04D + timing: knock retard is added, so a larger value means a later spark
 D050 below zero?
 D051 yes — minimum
 D053 later than 45?
@@ -6319,7 +6319,7 @@ F75D +5 %
 # ======================================================================
 # DATA TABLES (C000-CA04), empty areas and vectors
 # ======================================================================
-table C000 256 IGNITION MAP 1 (Super, warm engine), 16×16: rows are pressure (C200), columns are rpm (C210); 1 unit ≈ 1°, larger means later [assumed]
+table C000 256 IGNITION MAP 1 (Super, warm engine), 16×16: rows are pressure (C200), columns are rpm (C210); 1 unit ≈ 1°, larger means later (from the code: knock retard is added to the angle, D04D)
 table C100 256 IGNITION MAP 2 (cold engine / prolonged knock), 16×16
 table C200 16 pressure axis for the ignition maps (descending): 192 … 51
 table C210 16 rpm axis (shared): 40 53 67 80 93 107 120 133 147 160 173 187 200 213 220 240

@@ -6,10 +6,21 @@ Firmware dumps of the Hitachi MAC-14 and MAC-12D engine control units and their 
 
 | File | Unit | Engine | EPROM | SHA-256 |
 |---|---|---|---|---|
-| `src/MAC-14.BIN` | MAC-14, 447905383L | MC (1988–1991) | MBM27128, 16 KB, $C000–$FFFF | `a229f12c5f0fadd0214c420c67368cab571f0e1736263b6ccc484de028713d29` |
-| `src/MAC-12D.BIN` | MAC-12D, 857905383 | 1B/2B (1988–1990) | MBM2764, 8 KB, $E000–$FFFF | `407089b4111323564130cfe3333cd1fb94f1ae7f2ad20de5ac04ee586765375e` |
+| `src/MAC-14.BIN` | MAC-14, 447905383L | MC (1988–1991); other MC part numbers and revisions may differ | MBM27128, 16 KB, $C000–$FFFF | `a229f12c5f0fadd0214c420c67368cab571f0e1736263b6ccc484de028713d29` |
+| `src/MAC-12D.BIN` | MAC-12D, 857905383 | 1B/2B (1988–1990); not confirmed that one image fits both | MBM2764, 8 KB, $E000–$FFFF | `407089b4111323564130cfe3333cd1fb94f1ae7f2ad20de5ac04ee586765375e` |
 
 Both units use the HD63B03XP processor.
+
+## Where the dumps come from
+
+Both EPROMs are original, taken from the units, and were read with an XGecu T48 programmer in Xgpro.
+
+![MAC-12D and MAC-14 EPROMs](img/eproms.jpg)
+
+| Unit | Label | Chip | Date code |
+|---|---|---|---|
+| MAC-12D | MAC-12 D | Fujitsu 2764-30-X GT | 8745 (1987, week 45) |
+| MAC-14 | MAC-14 G1 | Fujitsu 27128-23-X GT | 8815 (1988, week 15) |
 
 ## Contents
 
